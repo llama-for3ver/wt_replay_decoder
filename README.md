@@ -1,4 +1,7 @@
 # WT Replay Decoder
+[![crates.io](https://img.shields.io/crates/v/wrpl.svg)](https://crates.io/crates/wrpl)
+[![Documentation](https://docs.rs/wrpl/badge.svg)](https://docs.rs/wrpl)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/llama-for3ver/wt_replay_decoder/ci.yml?branch=main&label=build&logo=github)](https://github.com/llama-for3ver/wt_replay_decoder/actions)
 A Rust library/CLI to decode and parse War Thunder replays, sometimes successfully.
 
 ## Usage
@@ -7,7 +10,7 @@ A Rust library/CLI to decode and parse War Thunder replays, sometimes successful
 ```shell
 cargo run -- -r my_replay.wrpl
 ```
-todo
+[todo]
 
 ## TODO/Roadmap
 - [X] Parse headers (client & server)
@@ -24,3 +27,5 @@ todo
 - [ ] __Get more information out of replays__
     - [ ] Vehicles, shells, positions, etc.
 - [ ] Generally make more extensible/maintainable
+
+
