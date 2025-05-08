@@ -21,4 +21,4 @@ log = "0.4.27"
 memchr = "2.7.4"
 tokio = { version = "1", features = ["full"] }
 reqwest = "0.12.15"
-wt_blk = "0.2.1"
+# wt_blk = "0.2.1"
