@@ -9,7 +9,7 @@ license = "GPL-3.0"
 repository = "https://github.com/llama-for3ver/wrpl"
 description = "A library/CLI to decode War Thunder replays (.wrpl)."
 exclude = ["replays/**", "tests/**"]
-keywords = ["parsing", "encoding", "command-line-utilities"]
+keywords = ["parsing", "encoding"] # "command-line-utilities"
 
 [dependencies]
 anyhow = "1.0.98"
