@@ -1,0 +1,6 @@
+/target
+/replays
+/.ropeproject
+/.idea
+/.vscode
+**/.DS_Store
