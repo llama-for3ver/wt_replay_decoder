@@ -1,6 +1,6 @@
 [package]
 name = "wrpl"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2021"
 default-run = "parse_replay"
 # FIXME: add other authors, I just cobbled shit I found into this package
