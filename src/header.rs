@@ -10,7 +10,6 @@ pub struct Difficulty {
     pub difficulty_value: u8,
 }
 
-
 // DifficultyCon = ct.ExprAdapter(ct.Bitwise(ct.FocusedSeq(
 //     'difficulty',
 //     'unk_nib' / ct.BitsInteger(4),
@@ -27,7 +26,7 @@ impl Difficulty {
     }
 }
 
-/// The header of a replay file. 
+/// The header of a replay file.
 /// Should be agnostic towards server or client.
 #[derive(Debug, Clone)]
 pub struct ReplayHeader {
@@ -71,9 +70,7 @@ pub struct ReplayHeader {
     pub score_limit: u32,
     /// vehicles usable?
     pub battle_class: String,
-    /// something about nukes.
-    /// believe it's always `killStreaksAircraftOrHelicopter_1`
-    /// at the appropriate BR & mode.
+    /// `killStreaksAircraftOrHelicopter_1` if nukes are available
     pub battle_kill_streak: String,
 }
 
@@ -108,7 +105,6 @@ impl fmt::Display for ReplayHeader {
         Ok(())
     }
 }
-
 
 /// Parses the header of a replay file.
 /// Takes a *path* ATM.
