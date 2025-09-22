@@ -5,10 +5,8 @@ use log::{debug, error, info, warn};
 use std::io::BufRead;
 use std::io::{self, Cursor, Read};
 
-
-
-/// Reads a variable-length size prefix from the stream. 
-fn read_variable_length_size<R: Read>(stream: &mut R) -> Result<Option<(u32, usize)>> {
+/// Reads a variable-length size prefix from the stream.
+pub fn read_variable_length_size<R: Read>(stream: &mut R) -> Result<Option<(u32, usize)>> {
     let mut buf = [0u8; 1];
 
     // read the first byte
@@ -95,10 +93,9 @@ fn read_variable_length_size<R: Read>(stream: &mut R) -> Result<Option<(u32, usi
     Ok(Some((final_size, prefix_bytes_read)))
 }
 
-
 /// Reads packet type and timestamp from the start of a DECOMPRESSED stream/buffer.
 /// Returns `Ok(Some((packet_type, timestamp_ms, bytes_read)))` or `Ok(None)` on EOF.
-fn read_packet_header_from_stream<R: Read>(
+pub fn read_packet_header_from_stream<R: Read>(
     stream: &mut R,
     last_timestamp_ms: u32,
 ) -> Result<Option<(u8, u32, usize)>> {
@@ -138,7 +135,6 @@ fn read_packet_header_from_stream<R: Read>(
 
     Ok(Some((packet_type_val, timestamp_ms, bytes_read_for_header)))
 }
-
 
 /// Process replay data (potentially compressed) from a byte slice.
 ///
@@ -275,7 +271,19 @@ pub fn process_replay_data(
                     );
 
                     stats.packets.push(PacketInfo {
-                        packet_type: packet_type_val,
+                        packet_type: match packet_type_val {
+                            // apparently this is what you're supposed to do...?
+                            0 => ReplayPacketType::EndMarker,
+                            1 => ReplayPacketType::StartMarker,
+                            2 => ReplayPacketType::AircraftSmall,
+                            3 => ReplayPacketType::Chat,
+                            4 => ReplayPacketType::MPI,
+                            5 => ReplayPacketType::NextSegment,
+                            6 => ReplayPacketType::ECS,
+                            7 => ReplayPacketType::Snapshot,
+                            8 => ReplayPacketType::ReplayHeaderInfo,
+                            _ => ReplayPacketType::Unknown,
+                        },
                         timestamp_ms,
                         payload: payload_content.to_vec(),
                     });
@@ -387,10 +395,34 @@ pub struct ParsedReplay {
     pub chat_messages: Vec<ChatInfo>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayPacketType {
+    /// End of replay marker.
+    EndMarker = 0,
+    /// Start of replay marker.
+    StartMarker = 1, // ?
+    /// Aircraft state updates (positions, velocity, controls, etc.)
+    AircraftSmall = 2,
+    /// Chat messages - Sender, message, flags
+    Chat = 3,
+    /// Wrapped MPI messages (ObjectID, MessageID, payload)
+    MPI = 4,
+    /// Next segment marker.
+    NextSegment = 5,
+    /// ECS network data.
+    ECS = 6,
+    /// Full game state snapshot, can't find it used however.
+    Snapshot = 7,
+    /// Initial header/settings data duplication.
+    ReplayHeaderInfo = 8,
+    /// Unknown packet type.
+    Unknown = 255, // Using 255 for unknown since -1 doesn't fit u8
+}
+
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct PacketInfo {
-    pub packet_type: u8,
+    pub packet_type: ReplayPacketType,
     /// seems to be lying
     pub timestamp_ms: u32,
     pub payload: Vec<u8>,
@@ -412,7 +444,7 @@ pub struct ChatInfo {
 }
 
 /// Parses the payload of a chat packet.
-fn parse_chat_packet(payload: &[u8], timestamp_ms: u32) -> Option<ChatInfo> {
+pub fn parse_chat_packet(payload: &[u8], timestamp_ms: u32) -> Option<ChatInfo> {
     let mut cursor = Cursor::new(payload);
 
     fn read_u8(cur: &mut Cursor<&[u8]>) -> Result<u8> {
