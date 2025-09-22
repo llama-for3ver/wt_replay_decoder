@@ -1,6 +1,6 @@
 meta:
   id: replay_header
-  file-extension: bin
+  file-extension: wrpl
   endian: le
 
 seq:
