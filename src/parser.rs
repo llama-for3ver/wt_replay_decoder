@@ -4,8 +4,11 @@ use anyhow::{bail, Context, Result};
 use flate2::read::ZlibDecoder;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
-use std::io::{self, BufRead, Cursor, Read, Write};
-use std::process::{Command, Stdio};
+use std::io::{self, BufRead, Cursor, Read};
+use std::sync::Arc;
+use wt_blk::blk;
+use wt_blk::blk::file::FileType;
+use wt_blk::blk::nm_file::NameMap;
 
 /// Reads a variable-length size prefix from the stream.
 pub fn read_variable_length_size<R: Read>(stream: &mut R) -> Result<Option<(u32, usize)>> {
@@ -674,44 +677,35 @@ pub fn parse_replay_results(data: &[u8], rez_offset: usize) -> Option<ReplayResu
 }
 
 fn decompress_blk(compressed_data: &[u8]) -> Result<String> {
-    // FIXME: Use Rusty API (wt_blk)
-    let mut child = Command::new("wt_ext_cli")
-        .args(&[
-            "--unpack_raw_blk",
-            "--stdout",
-            "--stdin",
-            "--format",
-            "Json",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("Failed to start wt_ext_cli. Make sure it's installed and in PATH.")?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin
-            .write_all(compressed_data)
-            .context("Failed to write data to wt_ext_cli stdin")?;
+    if compressed_data.is_empty() {
+        bail!("No data provided for decompress_blk");
     }
 
-    let output = child
-        .wait_with_output()
-        .context("Failed to wait for wt_ext_cli to complete")?;
+    let zstd_dict = None;
+    let nm: Option<Arc<NameMap>> = None;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "wt_ext_cli failed with status {}: {}",
-            output.status,
-            stderr
-        );
+    match FileType::from_byte(compressed_data[0])? {
+        FileType::BBF => {}
+        FileType::FAT => {}
+        FileType::FAT_ZSTD => {}
+        FileType::SLIM => {}
+        FileType::SLIM_ZSTD => {}
+        FileType::SLIM_ZST_DICT => {
+            bail!("ZSTD dictionary compressed BLK not supported");
+        }
     }
 
-    let json_output =
-        String::from_utf8(output.stdout).context("Couldn't parse JSON output (UTF-8)")?;
+    let mut compressed_vec = compressed_data.to_vec();
+    let mut parsed = blk::unpack_blk(&mut compressed_vec, zstd_dict, nm)
+        .map_err(|e| anyhow::anyhow!("blk::unpack_blk failed: {}", e))?;
 
-    // info!("{}", json_output);
+    parsed.merge_fields();
+    let json_bytes = parsed
+        .as_serde_json()
+        .map_err(|e| anyhow::anyhow!("blk::as_serde_json failed: {}", e))?;
+
+    let json_output = String::from_utf8(json_bytes)
+        .context("Couldn't parse BLK JSON output (UTF-8 conversion failed)")?;
 
     Ok(json_output)
 }
