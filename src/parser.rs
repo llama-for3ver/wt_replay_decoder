@@ -8,7 +8,7 @@ use std::io::{self, BufRead, Cursor, Read};
 use std::sync::Arc;
 use wt_blk::blk;
 use wt_blk::blk::file::FileType;
-use wt_blk::blk::nm_file::NameMap;
+use wt_blk::blk::name_map::NameMap;
 
 /// Reads a variable-length size prefix from the stream.
 pub fn read_variable_length_size<R: Read>(stream: &mut R) -> Result<Option<(u32, usize)>> {
