@@ -75,12 +75,11 @@ mod tests {
         const PATH: &str = "tests/replays/server_3.wrpl";
 
         let header = header::parse_header(std::path::Path::new(PATH)).unwrap();
-        
+
         assert_eq!(header.version, 101286);
-        assert_eq!(header.level, 
-            "levels/air_mysterious_valley.bin");
+        assert_eq!(header.level, "levels/air_mysterious_valley.bin");
         assert_eq!(
-            header.level_settings, 
+            header.level_settings,
             "gamedata/missions/cta/planes/historical/bfd/air_mysterious_valley_wide_spawns_bfd_norespawn.blk");
         assert_eq!(
             header.battle_type,
