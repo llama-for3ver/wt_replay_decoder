@@ -667,7 +667,7 @@ fn decompress_blk(compressed_data: &[u8]) -> Result<String> {
     let mut parsed = blk::unpack_blk(&mut compressed_vec, zstd_dict, nm)
         .map_err(|e| anyhow::anyhow!("blk::unpack_blk failed: {}", e))?;
 
-    parsed.merge_fields();
+    let _ = parsed.merge_fields();
     let json_bytes = parsed
         .as_serde_json()
         .map_err(|e| anyhow::anyhow!("blk::as_serde_json failed: {}", e))?;
