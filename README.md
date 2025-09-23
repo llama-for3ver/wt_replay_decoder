@@ -14,11 +14,10 @@ cargo run -- -r my_replay.wrpl
 
 ## TODO/Roadmap
 - [X] Parse headers (client & server)
-- [x] Parse chat (client only)
+- [x] Parse chat (client only, very partially server)
 - [X] CLI application to parse single replays
     - [ ] Parse entire folder/install (and provide stats?)
-    - [ ] More intelligently detecting ZLIB offsets
-    - [ ] Parse replays.wdb 
+    - [X] More intelligently detecting ZLIB offsets
     - [ ] Possibly seperate, as lib end-users don't want CLI deps
 - [X] Download an entire game (CLI)
 - [ ] __Support server replays for basic packet parsing__
@@ -27,5 +26,3 @@ cargo run -- -r my_replay.wrpl
 - [ ] __Get more information out of replays__
     - [ ] Vehicles, shells, positions, etc.
 - [ ] Generally make more extensible/maintainable
-
-
