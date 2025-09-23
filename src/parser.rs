@@ -120,7 +120,6 @@ pub fn read_packet_header_from_stream<R: Read>(
         // timestamp didn't change
         packet_type_val = first_byte ^ 0x10;
     } else {
-        // timestamp DID change
         packet_type_val = first_byte;
         let mut ts_bytes = [0u8; 4];
         match stream.read_exact(&mut ts_bytes) {
@@ -142,10 +141,6 @@ pub fn read_packet_header_from_stream<R: Read>(
 }
 
 /// Process replay data (potentially compressed) from a byte slice.
-///
-/// This function takes raw data, a start offset, and a flag indicating whether
-/// to skip zlib decompression.
-/// Returns information about the processing results.
 pub fn process_replay_data(
     data: &[u8],
     start_offset: u64,
@@ -367,30 +362,7 @@ pub fn process_replay_stream(
     replay_data: &[u8],
     start_offset: u64,
     skip_zlib: bool,
-) -> Result<ParsedReplay> {
-    if start_offset > 0 {
-        info!(
-            "Seeking to stream offset {:#0x} ({}) in input data.",
-            start_offset, start_offset
-        );
-        if skip_zlib {
-            info!("Will read raw packet data from this offset.");
-        }
-    } else {
-        info!("Starting processing from beginning of input data (offset 0).");
-    }
-
-    let stats = process_replay_data(replay_data, start_offset, skip_zlib)?;
-
-    Ok(stats)
-}
-
-/// Processes the replay stream with header information for complete parsing including results.
-pub fn process_replay_stream_with_header(
-    replay_data: &[u8],
-    header: &ReplayHeader,
-    start_offset: u64,
-    skip_zlib: bool,
+    header: Option<&ReplayHeader>,
 ) -> Result<ParsedReplay> {
     if start_offset > 0 {
         info!(
@@ -406,21 +378,22 @@ pub fn process_replay_stream_with_header(
 
     let mut stats = process_replay_data(replay_data, start_offset, skip_zlib)?;
 
-    // Attempt to parse end-of-replay results if rez_offset is available
-    if header.rez_offset > 0 && header.rez_offset < replay_data.len() as u32 {
-        info!(
-            "Attempting to parse end-of-replay results at offset {}",
-            header.rez_offset
-        );
-        stats.replay_results = parse_replay_results(replay_data, header.rez_offset as usize);
+    if let Some(header) = header {
+        if header.rez_offset > 0 && header.rez_offset < replay_data.len() as u32 {
+            info!(
+                "Attempting to parse end-of-replay results at offset {}",
+                header.rez_offset
+            );
+            stats.replay_results = parse_replay_results(replay_data, header.rez_offset as usize);
 
-        if stats.replay_results.is_some() {
-            info!("Successfully parsed end-of-replay results");
+            if stats.replay_results.is_some() {
+                info!("Successfully parsed end-of-replay results");
+            } else {
+                warn!("Failed to parse end-of-replay results (compression not yet implemented)");
+            }
         } else {
-            warn!("Failed to parse end-of-replay results (compression not yet implemented)");
+            warn!("No valid rez_offset found in header, skipping result parsing");
         }
-    } else {
-        warn!("No valid rez_offset found in header, skipping result parsing");
     }
 
     Ok(stats)
@@ -446,7 +419,7 @@ pub struct ParsedReplay {
 /// Complete replay results containing battle outcome and player statistics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplayResults {
-    /// Battle status (e.g., "won", "lost", "left").
+    /// Battle result ("won", "lost", "left").
     pub status: String,
     /// Time played in seconds.
     pub time_played: f64,
@@ -454,16 +427,13 @@ pub struct ReplayResults {
     pub author_user_id: String,
     /// Username of the replay author.
     pub author: String,
-    /// List of players and their performance data.
+    /// List of players and their results.
     pub players: Vec<PlayerData>,
 }
 
-/// Complete player information including profile and performance data.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerData {
-    /// Player profile information.
     pub player_info: PlayerInfo,
-    /// Player performance statistics.
     pub replay_data: PlayerReplayData,
 }
 
@@ -478,11 +448,10 @@ pub struct PlayerInfo {
     pub squadron_id: String,
     /// Squadron/clan tag.
     pub squadron_tag: String,
-    /// Gaming platform.
+    /// Player's platform ("win64", "macosx", etc.)
     pub platform: String,
 }
 
-/// Player performance statistics for the replay.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerReplayData {
     pub user_id: String,
@@ -658,7 +627,6 @@ pub fn parse_replay_results(data: &[u8], rez_offset: usize) -> Option<ReplayResu
         compressed_data.len()
     );
 
-    // Use wt_ext_cli to decompress the data
     let json_data = match decompress_blk(compressed_data) {
         Ok(data) => data,
         Err(e) => {
@@ -706,6 +674,8 @@ fn decompress_blk(compressed_data: &[u8]) -> Result<String> {
 
     let json_output = String::from_utf8(json_bytes)
         .context("Couldn't parse BLK JSON output (UTF-8 conversion failed)")?;
+
+    // info!("{}", json_output);
 
     Ok(json_output)
 }
@@ -757,7 +727,6 @@ pub fn parse_replay_results_json(json_data: &str) -> Result<ReplayResults> {
                             .unwrap_or("")
                             .to_string();
 
-                        // Find matching player info
                         let mut player_info = None;
                         for (_, info_value) in players_info {
                             if let Some(info_obj) = info_value.as_object() {

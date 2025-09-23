@@ -13,7 +13,7 @@ mod tests {
     fn test_parse_client_1() {
         let file = std::fs::read("tests/replays/client_1.wrpl").unwrap();
 
-        let replay = parser::process_replay_stream(&file, 2088, false).unwrap();
+        let replay = parser::process_replay_stream(&file, 2088, false, None).unwrap();
         // 19 messages
         assert_eq!(replay.chat_messages.len(), 19);
         // first one is "TEST" from "kiTmalZ"

@@ -166,14 +166,14 @@ fn main() {
     }
 
     let replay_result = if args.parse_results && header_info.is_some() {
-        parser::process_replay_stream_with_header(
+        parser::process_replay_stream(
             &file_data,
-            header_info.as_ref().unwrap(),
             start_offset,
             args.skip_zlib,
+            Some(header_info.as_ref().unwrap()),
         )
     } else {
-        parser::process_replay_stream(&file_data, start_offset, args.skip_zlib)
+        parser::process_replay_stream(&file_data, start_offset, args.skip_zlib, None)
     };
 
     match replay_result {
