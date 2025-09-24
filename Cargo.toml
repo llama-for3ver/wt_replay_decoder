@@ -3,10 +3,9 @@ name = "wrpl"
 version = "0.9.0"
 edition = "2021"
 default-run = "parse_replay"
-# FIXME: add other authors, I just cobbled shit I found into this package
 authors = ["llama-for3ver <llamaz@rooik.at>"]
-license = "GPL-3.0"
-repository = "https://github.com/llama-for3ver/wrpl"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/llama-for3ver/wt_replay_decoder"
 description = "A library/CLI to decode War Thunder replays (.wrpl)."
 exclude = ["replays/**", "tests/**"]
 keywords = ["parsing", "encoding"] # "command-line-utilities"
