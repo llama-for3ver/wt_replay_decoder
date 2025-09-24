@@ -13,7 +13,7 @@ mod tests {
     fn test_parse_client_1() {
         let file = std::fs::read("tests/replays/client_1.wrpl").unwrap();
 
-        let replay = parser::process_replay_stream(&file, 2088, false).unwrap();
+        let replay = parser::process_replay_stream(&file, 2088, false, None).unwrap();
         // 19 messages
         assert_eq!(replay.chat_messages.len(), 19);
         // first one is "TEST" from "kiTmalZ"
@@ -75,12 +75,11 @@ mod tests {
         const PATH: &str = "tests/replays/server_3.wrpl";
 
         let header = header::parse_header(std::path::Path::new(PATH)).unwrap();
-        
+
         assert_eq!(header.version, 101286);
-        assert_eq!(header.level, 
-            "levels/air_mysterious_valley.bin");
+        assert_eq!(header.level, "levels/air_mysterious_valley.bin");
         assert_eq!(
-            header.level_settings, 
+            header.level_settings,
             "gamedata/missions/cta/planes/historical/bfd/air_mysterious_valley_wide_spawns_bfd_norespawn.blk");
         assert_eq!(
             header.battle_type,
@@ -101,5 +100,26 @@ mod tests {
         assert_eq!(header.score_limit, 10400);
         assert_eq!(header.battle_class, "base_dom");
         assert_eq!(header.battle_kill_streak, "");
+    }
+
+    #[test]
+    fn test_parse_client_results() {
+        // This test parses the client_1.wrpl and asserts key values from replay results at the rez_offset.
+        let file = std::fs::read("tests/replays/client_2.wrpl").unwrap();
+        let header =
+            header::parse_header(std::path::Path::new("tests/replays/client_2.wrpl")).unwrap();
+
+        // This should match the BLK JSON, i.e. not fail
+        let results = parser::parse_replay_results(&file, header.rez_offset as usize)
+            .expect("parse_replay_results returned None");
+
+        assert_eq!(results.status, "fail");
+        assert_eq!(results.author, "[WTPU3] kiTmalZ");
+        assert_eq!(results.time_played, 578.3303_f64);
+        assert_eq!(results.author_user_id, 176625161.to_string());
+
+        // TODO: Add more assertions for player info
+        assert_eq!(results.players.len(), 18);
+        assert_eq!(results.players[0].player_info.platform, "win64")
     }
 }

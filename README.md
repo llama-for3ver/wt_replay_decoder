@@ -1,8 +1,12 @@
+[![crates.io](https://img.shields.io/crates/v/wrpl.svg)](https://crates.io/crates/wrpl) [![Documentation](https://docs.rs/wrpl/badge.svg)](https://docs.rs/wrpl) [![Build Status](https://img.shields.io/github/actions/workflow/status/llama-for3ver/wt_replay_decoder/cargo.yml?branch=main&label=build&logo=github)](https://github.com/llama-for3ver/wt_replay_decoder/actions)
+
 # WT Replay Decoder
-[![crates.io](https://img.shields.io/crates/v/wrpl.svg)](https://crates.io/crates/wrpl)
-[![Documentation](https://docs.rs/wrpl/badge.svg)](https://docs.rs/wrpl)
-<!-- [![Build Status](https://img.shields.io/github/actions/workflow/status/llama-for3ver/wt_replay_decoder/ci.yml?branch=main&label=build&logo=github)](https://github.com/llama-for3ver/wt_replay_decoder/actions) -->
+This library is licensed under [**AGPL**](/LICENSE.md). You must read and agree to the terms before downloading, installing, or otherwise using this library.
+
+---
+
 A Rust library/CLI to decode and parse War Thunder replays, sometimes successfully.
+
 
 ## Usage
 
@@ -14,11 +18,10 @@ cargo run -- -r my_replay.wrpl
 
 ## TODO/Roadmap
 - [X] Parse headers (client & server)
-- [x] Parse chat (client only)
+- [x] Parse chat (client only, very partially server)
 - [X] CLI application to parse single replays
     - [ ] Parse entire folder/install (and provide stats?)
-    - [ ] More intelligently detecting ZLIB offsets
-    - [ ] Parse replays.wdb 
+    - [X] More intelligently detecting ZLIB offsets
     - [ ] Possibly seperate, as lib end-users don't want CLI deps
 - [X] Download an entire game (CLI)
 - [ ] __Support server replays for basic packet parsing__
@@ -27,5 +30,3 @@ cargo run -- -r my_replay.wrpl
 - [ ] __Get more information out of replays__
     - [ ] Vehicles, shells, positions, etc.
 - [ ] Generally make more extensible/maintainable
-
-

@@ -8,8 +8,8 @@ use wrpl::{header, parser, utils};
 #[derive(Parser, Debug)]
 #[command(
     author = crate_authors!(),
-    version = "0.5",
-    about = "A CLI utility to parse replay files, currently extracting header and chat messages. 
+    version = "0.6",
+    about = "A CLI utility to parse replay files, extracting header, chat messages, and end-of-replay results.
 Designed only for client replays, chat message parsing will fail otherwise.",
 help_template = "\
 {name} {version} ({author})
@@ -18,7 +18,7 @@ help_template = "\
 USAGE:
     {usage}
 
-EXAMPLES: 
+EXAMPLES:
     ./parse_replay -r ./#2025.05.05.wrpl
     ./parse_replay -r ./#2025.05.05.wrpl --skip-zlib --offset 0x000004D1
 
@@ -39,6 +39,20 @@ struct Args {
     /// Skip zlib decompression and parse raw packet data [directly from the offset].
     #[arg(long, default_value_t = false)]
     skip_zlib: bool,
+
+    /// Parse replay results data (requires header parsing).
+    #[arg(long, default_value_t = false)]
+    parse_results: bool,
+}
+
+fn humanize_victory_or_loss(input: &str) -> String {
+    match input {
+        "fail" => "Victory".to_string(),
+        "success" => "Defeat".to_string(),
+        // not sure what this one means
+        "left" => "Draw".to_string(),
+        _ => "Unknown".to_string(),
+    }
 }
 
 fn main() {
@@ -74,6 +88,24 @@ fn main() {
         error!("File is too short!");
     }
 
+    let header_info = if has_wrpl_header {
+        // parse the header (still needs path for now)
+        // which is suboptimal!!
+        match header::parse_header(&args.replay_file) {
+            Ok(header) => {
+                info!("Successfully parsed replay header:");
+                println!("{}", header);
+                Some(header)
+            }
+            Err(e) => {
+                error!("Failed to parse replay header: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     if let Some(user_offset) = args.offset {
         info!(
             "Using provided offset: {:#0x} ({})",
@@ -92,19 +124,7 @@ fn main() {
             );
         }
         start_offset = user_offset;
-    } else if has_wrpl_header {
-        // parse the header (still needs path for now)
-        // which is suboptimal!!
-        match header::parse_header(&args.replay_file) {
-            Ok(header) => {
-                info!("Successfully parsed replay header:");
-                println!("{}", header);
-            }
-            Err(e) => {
-                error!("Failed to parse replay header: {}", e);
-            }
-        }
-
+    } else if has_wrpl_header && header_info.is_some() {
         if args.skip_zlib {
             warn!("--skip-zlib provided, but file appears to be a standard .wrpl (starts with E5 AC).");
             info!(
@@ -145,7 +165,18 @@ fn main() {
         start_offset = 0;
     }
 
-    match parser::process_replay_stream(&file_data, start_offset, args.skip_zlib) {
+    let replay_result = if args.parse_results && header_info.is_some() {
+        parser::process_replay_stream(
+            &file_data,
+            start_offset,
+            args.skip_zlib,
+            Some(header_info.as_ref().unwrap()),
+        )
+    } else {
+        parser::process_replay_stream(&file_data, start_offset, args.skip_zlib, None)
+    };
+
+    match replay_result {
         Ok(stats) => {
             // display chat messages here...
             // omit channel_type and is_enemy for now
@@ -162,7 +193,17 @@ fn main() {
                     );
                 }
             }
-            // and display final stats
+
+            // try and display replay results
+            if let Some(ref results) = stats.replay_results {
+                info!("Found {} players", results.players.len());
+                info!("Status: {}", humanize_victory_or_loss(&results.status));
+                info!("Time Played: {:.1} seconds", results.time_played);
+                info!("Author: {} [{}]", results.author, results.author_user_id);
+            } else if args.parse_results {
+                warn!("Replay results parsing was requested but no results found");
+            }
+
             debug!("Processing Stats:");
             debug!("  Packets Processed: {}", stats.packet_count);
             debug!(

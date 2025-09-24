@@ -1,9 +1,14 @@
+use crate::header::ReplayHeader;
 use crate::utils::hex;
 use anyhow::{bail, Context, Result};
 use flate2::read::ZlibDecoder;
 use log::{debug, error, info, warn};
-use std::io::BufRead;
-use std::io::{self, Cursor, Read};
+use serde::{Deserialize, Serialize};
+use std::io::{self, BufRead, Cursor, Read};
+use std::sync::Arc;
+use wt_blk::blk;
+use wt_blk::blk::file::FileType;
+use wt_blk::blk::name_map::NameMap;
 
 /// Reads a variable-length size prefix from the stream.
 pub fn read_variable_length_size<R: Read>(stream: &mut R) -> Result<Option<(u32, usize)>> {
@@ -115,7 +120,6 @@ pub fn read_packet_header_from_stream<R: Read>(
         // timestamp didn't change
         packet_type_val = first_byte ^ 0x10;
     } else {
-        // timestamp DID change
         packet_type_val = first_byte;
         let mut ts_bytes = [0u8; 4];
         match stream.read_exact(&mut ts_bytes) {
@@ -137,10 +141,6 @@ pub fn read_packet_header_from_stream<R: Read>(
 }
 
 /// Process replay data (potentially compressed) from a byte slice.
-///
-/// This function takes raw data, a start offset, and a flag indicating whether
-/// to skip zlib decompression.
-/// Returns information about the processing results.
 pub fn process_replay_data(
     data: &[u8],
     start_offset: u64,
@@ -362,6 +362,7 @@ pub fn process_replay_stream(
     replay_data: &[u8],
     start_offset: u64,
     skip_zlib: bool,
+    header: Option<&ReplayHeader>,
 ) -> Result<ParsedReplay> {
     if start_offset > 0 {
         info!(
@@ -375,7 +376,25 @@ pub fn process_replay_stream(
         info!("Starting processing from beginning of input data (offset 0).");
     }
 
-    let stats = process_replay_data(replay_data, start_offset, skip_zlib)?;
+    let mut stats = process_replay_data(replay_data, start_offset, skip_zlib)?;
+
+    if let Some(header) = header {
+        if header.rez_offset > 0 && header.rez_offset < replay_data.len() as u32 {
+            info!(
+                "Attempting to parse end-of-replay results at offset {}",
+                header.rez_offset
+            );
+            stats.replay_results = parse_replay_results(replay_data, header.rez_offset as usize);
+
+            if stats.replay_results.is_some() {
+                info!("Successfully parsed end-of-replay results");
+            } else {
+                warn!("Failed to parse end-of-replay results (compression not yet implemented)");
+            }
+        } else {
+            warn!("No valid rez_offset found in header, skipping result parsing");
+        }
+    }
 
     Ok(stats)
 }
@@ -393,6 +412,68 @@ pub struct ParsedReplay {
     pub packets: Vec<PacketInfo>,
     /// List of chat messages.
     pub chat_messages: Vec<ChatInfo>,
+    /// End-of-replay results data (if available).
+    pub replay_results: Option<ReplayResults>,
+}
+
+/// Complete replay results containing battle outcome and player statistics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayResults {
+    /// Battle result ("won", "lost", "left").
+    pub status: String,
+    /// Time played in seconds.
+    pub time_played: f64,
+    /// User ID of the replay author.
+    pub author_user_id: String,
+    /// Username of the replay author.
+    pub author: String,
+    /// List of players and their results.
+    pub players: Vec<PlayerData>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerData {
+    pub player_info: PlayerInfo,
+    pub replay_data: PlayerReplayData,
+}
+
+/// Player profile information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerInfo {
+    /// Unique user ID.
+    pub user_id: String,
+    /// Display username.
+    pub username: String,
+    /// Squadron/clan ID.
+    pub squadron_id: String,
+    /// Squadron/clan tag.
+    pub squadron_tag: String,
+    /// Player's platform ("win64", "macosx", etc.)
+    pub platform: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlayerReplayData {
+    pub user_id: String,
+    pub squad: i32,
+    pub auto_squad: bool,
+    pub team: i32,
+    pub wait_time: f32,
+    pub kills: i32,
+    pub ground_kills: i32,
+    pub naval_kills: i32,
+    pub team_kills: i32,
+    pub ai_kills: i32,
+    pub ai_ground_kills: i32,
+    pub ai_naval_kills: i32,
+    pub assists: i32,
+    pub deaths: i32,
+    pub capture_zone: i32,
+    pub damage_zone: i32,
+    pub score: i32,
+    pub award_damage: i32,
+    pub missile_evades: i32,
+    pub lineup: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -525,4 +606,307 @@ pub fn parse_chat_packet(payload: &[u8], timestamp_ms: u32) -> Option<ChatInfo> 
             None
         }
     }
+}
+
+/// Parses end-of-replay results from offset.
+pub fn parse_replay_results(data: &[u8], rez_offset: usize) -> Option<ReplayResults> {
+    if rez_offset >= data.len() {
+        error!(
+            "Rez offset {} is beyond data length {}",
+            rez_offset,
+            data.len()
+        );
+        return None;
+    }
+
+    let compressed_data = &data[rez_offset..];
+
+    debug!(
+        "Found compressed data at offset {} with {} bytes",
+        rez_offset,
+        compressed_data.len()
+    );
+
+    let json_data = match decompress_blk(compressed_data) {
+        Ok(data) => data,
+        Err(e) => {
+            error!("Failed to decompress replay results data: {}", e);
+            return None;
+        }
+    };
+
+    match parse_replay_results_json(&json_data) {
+        Ok(results) => Some(results),
+        Err(e) => {
+            error!("Failed to parse replay results JSON: {}", e);
+            None
+        }
+    }
+}
+
+fn decompress_blk(compressed_data: &[u8]) -> Result<String> {
+    if compressed_data.is_empty() {
+        bail!("No data provided for decompress_blk");
+    }
+
+    let zstd_dict = None;
+    let nm: Option<Arc<NameMap>> = None;
+
+    match FileType::from_byte(compressed_data[0])? {
+        FileType::BBF => {}
+        FileType::FAT => {}
+        FileType::FAT_ZSTD => {}
+        FileType::SLIM => {}
+        FileType::SLIM_ZSTD => {}
+        FileType::SLIM_ZST_DICT => {
+            bail!("ZSTD dictionary compressed BLK not supported");
+        }
+    }
+
+    let mut compressed_vec = compressed_data.to_vec();
+    let mut parsed = blk::unpack_blk(&mut compressed_vec, zstd_dict, nm)
+        .map_err(|e| anyhow::anyhow!("blk::unpack_blk failed: {}", e))?;
+
+    let _ = parsed.merge_fields();
+    let json_bytes = parsed
+        .as_serde_json()
+        .map_err(|e| anyhow::anyhow!("blk::as_serde_json failed: {}", e))?;
+
+    let json_output = String::from_utf8(json_bytes)
+        .context("Couldn't parse BLK JSON output (UTF-8 conversion failed)")?;
+
+    // info!("{}", json_output);
+
+    Ok(json_output)
+}
+
+pub fn parse_replay_results_json(json_data: &str) -> Result<ReplayResults> {
+    let json_value: serde_json::Value =
+        serde_json::from_str(json_data).context("Failed to parse JSON")?;
+
+    let obj = json_value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("Root JSON is not an object"))?;
+
+    let status = obj
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+
+    let time_played = obj
+        .get("timePlayed")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+
+    let author_user_id = obj
+        .get("authorUserId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("-1")
+        .to_string();
+
+    let author = obj
+        .get("author")
+        .and_then(|v| v.as_str())
+        .unwrap_or("server")
+        .to_string();
+
+    let mut players = Vec::new();
+
+    if let Some(player_array) = obj.get("player").and_then(|v| v.as_array()) {
+        if let Some(ui_scripts_data) = obj.get("uiScriptsData").and_then(|v| v.as_object()) {
+            if let Some(players_info) = ui_scripts_data
+                .get("playersInfo")
+                .and_then(|v| v.as_object())
+            {
+                for player_data in player_array {
+                    if let Some(player_obj) = player_data.as_object() {
+                        let user_id_str = player_obj
+                            .get("userId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+
+                        let mut player_info = None;
+                        for (_, info_value) in players_info {
+                            if let Some(info_obj) = info_value.as_object() {
+                                let info_id =
+                                    info_obj.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                                if info_id.to_string() == user_id_str
+                                    || user_id_str.parse::<u64>().unwrap_or(0) == info_id
+                                {
+                                    player_info = Some(PlayerInfo {
+                                        user_id: user_id_str.clone(),
+                                        username: info_obj
+                                            .get("name")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                        squadron_id: info_obj
+                                            .get("clanId")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                        squadron_tag: info_obj
+                                            .get("squadronTag")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                        platform: info_obj
+                                            .get("platform")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                    });
+                                    break;
+                                }
+                            }
+                        }
+
+                        if let Some(info) = player_info {
+                            let mut lineup = Vec::new();
+                            for (_, info_value) in players_info {
+                                if let Some(info_obj) = info_value.as_object() {
+                                    let info_id =
+                                        info_obj.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                                    if info_id.to_string() == user_id_str
+                                        || user_id_str.parse::<u64>().unwrap_or(0) == info_id
+                                    {
+                                        if let Some(crafts) =
+                                            info_obj.get("crafts").and_then(|v| v.as_object())
+                                        {
+                                            for (_, craft_name) in crafts {
+                                                if let Some(name) = craft_name.as_str() {
+                                                    lineup.push(name.to_string());
+                                                }
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+
+                            let replay_data = PlayerReplayData {
+                                user_id: user_id_str.clone(),
+                                squad: player_obj
+                                    .get("squadId")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0) as i32,
+                                auto_squad: player_obj
+                                    .get("autoSquad")
+                                    .and_then(|v| v.as_bool())
+                                    .unwrap_or(false),
+                                team: player_obj.get("team").and_then(|v| v.as_i64()).unwrap_or(0)
+                                    as i32,
+                                wait_time: {
+                                    // wait_time comes from player info, not player data
+                                    let mut wait_time = 0.0;
+                                    for (_, info_value) in players_info {
+                                        if let Some(info_obj) = info_value.as_object() {
+                                            let info_id = info_obj
+                                                .get("id")
+                                                .and_then(|v| v.as_u64())
+                                                .unwrap_or(0);
+                                            if info_id.to_string() == user_id_str
+                                                || user_id_str.parse::<u64>().unwrap_or(0)
+                                                    == info_id
+                                            {
+                                                wait_time = info_obj
+                                                    .get("wait_time")
+                                                    .and_then(|v| v.as_f64())
+                                                    .unwrap_or(0.0);
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    wait_time as f32
+                                },
+                                kills: player_obj
+                                    .get("kills")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0) as i32,
+                                ground_kills: player_obj
+                                    .get("groundKills")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0)
+                                    as i32,
+                                naval_kills: player_obj
+                                    .get("navalKills")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0)
+                                    as i32,
+                                team_kills: player_obj
+                                    .get("teamKills")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0)
+                                    as i32,
+                                ai_kills: player_obj
+                                    .get("aiKills")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0) as i32,
+                                ai_ground_kills: player_obj
+                                    .get("aiGroundKills")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0)
+                                    as i32,
+                                ai_naval_kills: player_obj
+                                    .get("aiNavalKills")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0)
+                                    as i32,
+                                assists: player_obj
+                                    .get("assists")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0) as i32,
+                                deaths: player_obj
+                                    .get("deaths")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0) as i32,
+                                capture_zone: player_obj
+                                    .get("captureZone")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0)
+                                    as i32,
+                                damage_zone: player_obj
+                                    .get("damageZone")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0)
+                                    as i32,
+                                score: player_obj
+                                    .get("score")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0) as i32,
+                                award_damage: player_obj
+                                    .get("awardDamage")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0)
+                                    as i32,
+                                missile_evades: player_obj
+                                    .get("missileEvades")
+                                    .and_then(|v| v.as_i64())
+                                    .unwrap_or(0)
+                                    as i32,
+                                lineup,
+                            };
+
+                            players.push(PlayerData {
+                                player_info: info,
+                                replay_data,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(ReplayResults {
+        status,
+        time_played,
+        author_user_id,
+        author,
+        players,
+    })
 }
