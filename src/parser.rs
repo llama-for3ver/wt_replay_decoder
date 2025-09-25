@@ -162,7 +162,7 @@ pub fn process_replay_data(
         if peeked.len() >= 3 {
             // second bytes seems to be E<anything> (E2, E6 i've seen)
             // not sure why.
-            // aditionally, some replays don't have what is matched...
+            // additionally, some replays don't have what is matched...
             if peeked[0] != 0x40 || peeked[2] != 0x08 {
                 warn!("Decompressed replay stream does not start with expected bytes.");
             }
@@ -170,7 +170,7 @@ pub fn process_replay_data(
     }
 
     let mut stats = ParsedReplay::default();
-    let mut last_timestamp_ms: u32 = 0;
+    let last_timestamp_ms = 0;
 
     loop {
         debug!(
@@ -257,22 +257,12 @@ pub fn process_replay_data(
                         "Parsed Header ({} bytes): Type={}, Timestamp={}ms",
                         header_bytes_read, packet_type_val, timestamp_ms
                     );
-                    last_timestamp_ms = timestamp_ms;
 
                     let header_len = header_bytes_read;
                     let payload_content = &packet_data_with_header[header_len..];
-                    let payload_size_actual = payload_content.len();
-
-                    debug!(
-                        "Payload Content ({} bytes): {}{}",
-                        payload_size_actual,
-                        hex::encode(&payload_content[..std::cmp::min(payload_size_actual, 50)]),
-                        if payload_size_actual > 50 { "..." } else { "" }
-                    );
 
                     stats.packets.push(PacketInfo {
                         packet_type: match packet_type_val {
-                            // apparently this is what you're supposed to do...?
                             0 => ReplayPacketType::EndMarker,
                             1 => ReplayPacketType::StartMarker,
                             2 => ReplayPacketType::AircraftSmall,
@@ -330,15 +320,12 @@ pub fn process_replay_data(
             stats.final_offset
         );
     } else {
-        // We cannot reliably get the exact compressed position after using Box<dyn Read>
-        // Report the total decompressed bytes instead.
         info!("Cannot determine exact final compressed offset after processing.");
         info!(
             "Total decompressed bytes processed: {}",
             stats.total_decompressed_bytes
         );
-        // Set final_offset to 0 or some indicator value? For now, leave it as 0 (default).
-        stats.final_offset = 0; // Indicate unknown compressed end offset
+        stats.final_offset = 0;
     }
 
     Ok(stats)
@@ -481,7 +468,7 @@ pub enum ReplayPacketType {
     /// End of replay marker.
     EndMarker = 0,
     /// Start of replay marker.
-    StartMarker = 1, // ?
+    StartMarker = 1,
     /// Aircraft state updates (positions, velocity, controls, etc.)
     AircraftSmall = 2,
     /// Chat messages - Sender, message, flags
@@ -492,19 +479,18 @@ pub enum ReplayPacketType {
     NextSegment = 5,
     /// ECS network data.
     ECS = 6,
-    /// Full game state snapshot, can't find it used however.
+    /// Full game state snapshot.
     Snapshot = 7,
     /// Initial header/settings data duplication.
     ReplayHeaderInfo = 8,
     /// Unknown packet type.
-    Unknown = 255, // Using 255 for unknown since -1 doesn't fit u8
+    Unknown = 255,
 }
 
 #[derive(Debug)]
 #[allow(dead_code)]
 pub struct PacketInfo {
     pub packet_type: ReplayPacketType,
-    /// seems to be lying
     pub timestamp_ms: u32,
     pub payload: Vec<u8>,
 }
@@ -675,8 +661,6 @@ fn decompress_blk(compressed_data: &[u8]) -> Result<String> {
     let json_output = String::from_utf8(json_bytes)
         .context("Couldn't parse BLK JSON output (UTF-8 conversion failed)")?;
 
-    // info!("{}", json_output);
-
     Ok(json_output)
 }
 
@@ -801,7 +785,6 @@ pub fn parse_replay_results_json(json_data: &str) -> Result<ReplayResults> {
                                 team: player_obj.get("team").and_then(|v| v.as_i64()).unwrap_or(0)
                                     as i32,
                                 wait_time: {
-                                    // wait_time comes from player info, not player data
                                     let mut wait_time = 0.0;
                                     for (_, info_value) in players_info {
                                         if let Some(info_obj) = info_value.as_object() {

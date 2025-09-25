@@ -91,7 +91,7 @@ fn main() {
     let header_info = if has_wrpl_header {
         // parse the header (still needs path for now)
         // which is suboptimal!!
-        match header::parse_header(&args.replay_file) {
+        match header::parse_header(&file_data) {
             Ok(header) => {
                 info!("Successfully parsed replay header:");
                 println!("{}", header);
