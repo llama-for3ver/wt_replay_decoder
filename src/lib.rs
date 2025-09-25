@@ -4,6 +4,8 @@ pub mod utils;
 
 #[cfg(test)]
 mod tests {
+    use std::fs::read;
+
     use super::*;
 
     // we already know the offset of zlib is 0x828 for client_1
@@ -40,10 +42,8 @@ mod tests {
     /// And assert the header values are correct.
     ///
     fn test_parse_client_1_header() {
-        // let file = std::fs::read("tests/replays/client_1.wrpl").unwrap();
-        const PATH: &str = "tests/replays/client_1.wrpl";
-
-        let header = header::parse_header(std::path::Path::new(PATH)).unwrap();
+        let file = std::fs::read("tests/replays/client_1.wrpl").unwrap();
+        let header = header::parse_header(&file).unwrap();
 
         assert_eq!(header.version, 101286);
         assert_eq!(header.level, "levels/avg_egypt_sinai.bin");
@@ -70,11 +70,10 @@ mod tests {
 
     #[test]
     /// Parse the header of /tests/replays/server_3.wrpl.
-    /// And only header as server replays are fucked 🫠
     fn test_parse_server_header() {
-        const PATH: &str = "tests/replays/server_3.wrpl";
+        let file = read("tests/replays/server_3.wrpl").unwrap();
 
-        let header = header::parse_header(std::path::Path::new(PATH)).unwrap();
+        let header = header::parse_header(&file).unwrap();
 
         assert_eq!(header.version, 101286);
         assert_eq!(header.level, "levels/air_mysterious_valley.bin");
@@ -106,8 +105,7 @@ mod tests {
     fn test_parse_client_results() {
         // This test parses the client_1.wrpl and asserts key values from replay results at the rez_offset.
         let file = std::fs::read("tests/replays/client_2.wrpl").unwrap();
-        let header =
-            header::parse_header(std::path::Path::new("tests/replays/client_2.wrpl")).unwrap();
+        let header = header::parse_header(&file).unwrap();
 
         // This should match the BLK JSON, i.e. not fail
         let results = parser::parse_replay_results(&file, header.rez_offset as usize)

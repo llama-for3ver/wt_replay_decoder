@@ -1,8 +1,6 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::fmt;
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::io::{Cursor, Read, Seek, SeekFrom};
 
 #[derive(Debug, Clone)]
 pub struct Difficulty {
@@ -106,94 +104,91 @@ impl fmt::Display for ReplayHeader {
     }
 }
 
-/// Parses the header of a replay file.
-/// Takes a *path* ATM.
-pub fn parse_header(file_path: &Path) -> Result<ReplayHeader> {
-    let mut file = File::open(file_path)
-        .with_context(|| format!("Failed to open replay file: {:?}", file_path))?;
-
+/// Parses the header of a replay file from a byte slice.
+pub fn parse_header(data: &[u8]) -> Result<ReplayHeader> {
+    let mut cursor = Cursor::new(data);
     let mut buffer = [0u8; 4];
 
     // Read magic
-    file.read_exact(&mut buffer)?;
+    cursor.read_exact(&mut buffer)?;
     let magic = u32::from_le_bytes(buffer);
 
     // Read version
-    file.read_exact(&mut buffer)?;
+    cursor.read_exact(&mut buffer)?;
     let version = u32::from_le_bytes(buffer);
 
     // Read level (128 bytes)
-    let level = read_string(&mut file, 128)?;
+    let level = read_string(&mut cursor, 128)?;
 
     // Read level settings (260 bytes)
-    let level_settings = read_string(&mut file, 260)?;
+    let level_settings = read_string(&mut cursor, 260)?;
 
     // Read battle type (128 bytes)
-    let battle_type = read_string(&mut file, 128)?;
+    let battle_type = read_string(&mut cursor, 128)?;
 
     // Read environment (128 bytes)
-    let environment = read_string(&mut file, 128)?;
+    let environment = read_string(&mut cursor, 128)?;
 
     // Read visibility (32 bytes)
-    let visibility = read_string(&mut file, 32)?;
+    let visibility = read_string(&mut cursor, 32)?;
 
     // Read rez offset
-    file.read_exact(&mut buffer)?;
+    cursor.read_exact(&mut buffer)?;
     let rez_offset = u32::from_le_bytes(buffer);
 
     // Read difficulty (one byte)
     let mut diff_byte = [0u8; 1];
-    file.read_exact(&mut diff_byte)?;
+    cursor.read_exact(&mut diff_byte)?;
     let difficulty = Difficulty::from_byte(diff_byte[0]);
 
     // Skip padding (35 bytes)
-    file.seek(SeekFrom::Current(35))?;
+    cursor.seek(SeekFrom::Current(35))?;
 
     // Read session type
-    file.read_exact(&mut buffer)?;
+    cursor.read_exact(&mut buffer)?;
     let session_type = u32::from_le_bytes(buffer);
 
     // Skip padding (4 bytes)
-    file.seek(SeekFrom::Current(4))?;
+    cursor.seek(SeekFrom::Current(4))?;
 
     // Read session id (8 bytes)
     let mut session_buffer = [0u8; 8];
-    file.read_exact(&mut session_buffer)?;
+    cursor.read_exact(&mut session_buffer)?;
     let session_id_hex = u64::from_le_bytes(session_buffer);
 
     // Skip padding (4 bytes)
-    file.seek(SeekFrom::Current(4))?;
+    cursor.seek(SeekFrom::Current(4))?;
 
     // Read m_set_size
-    file.read_exact(&mut buffer)?;
+    cursor.read_exact(&mut buffer)?;
     let m_set_size = u32::from_le_bytes(buffer);
 
     // Skip padding (32 bytes)
-    file.seek(SeekFrom::Current(32))?;
+    cursor.seek(SeekFrom::Current(32))?;
 
     // Read loc_name (128 bytes)
-    let loc_name = read_string(&mut file, 128)?;
+    let loc_name = read_string(&mut cursor, 128)?;
 
     // Read start_time
-    file.read_exact(&mut buffer)?;
+    cursor.read_exact(&mut buffer)?;
     let start_time = u32::from_le_bytes(buffer);
 
     // Read time_limit
-    file.read_exact(&mut buffer)?;
+    cursor.read_exact(&mut buffer)?;
     let time_limit = u32::from_le_bytes(buffer);
 
     // Read score_limit
-    file.read_exact(&mut buffer)?;
+    cursor.read_exact(&mut buffer)?;
     let score_limit = u32::from_le_bytes(buffer);
 
     // Skip padding (48 bytes)
-    file.seek(SeekFrom::Current(48))?;
+    cursor.seek(SeekFrom::Current(48))?;
 
     // Read battle_class (128 bytes)
-    let battle_class = read_string(&mut file, 128)?;
+    let battle_class = read_string(&mut cursor, 128)?;
 
     // Read battle_kill_streak (128 bytes)
-    let battle_kill_streak = read_string(&mut file, 128)?;
+    let battle_kill_streak = read_string(&mut cursor, 128)?;
 
     Ok(ReplayHeader {
         magic,
@@ -217,9 +212,9 @@ pub fn parse_header(file_path: &Path) -> Result<ReplayHeader> {
     })
 }
 
-fn read_string(file: &mut File, max_len: usize) -> Result<String> {
+fn read_string<R: Read + Seek>(reader: &mut R, max_len: usize) -> Result<String> {
     let mut buffer = vec![0u8; max_len];
-    file.read_exact(&mut buffer)?;
+    reader.read_exact(&mut buffer)?;
 
     // find the null terminator...
     let null_pos = buffer.iter().position(|&b| b == 0).unwrap_or(max_len);
