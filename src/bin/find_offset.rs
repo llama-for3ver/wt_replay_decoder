@@ -4,6 +4,7 @@ use log::{error, info, warn};
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::PathBuf;
+use wrpl::packet::{parse_chat_packet, read_packet_header, read_vlq_size, ChatInfo};
 use wrpl::utils;
 
 #[derive(Parser, Debug)]
@@ -125,7 +126,7 @@ fn try_parse_chat_at_offset(
     data: &[u8],
     offset: u64,
     skip_zlib: bool,
-) -> Option<(wrpl::parser::ChatInfo, String)> {
+) -> Option<(ChatInfo, String)> {
     if offset as usize >= data.len() - 10 {
         return None;
     }
@@ -140,7 +141,7 @@ fn try_parse_chat_at_offset(
 
     let mut last_timestamp = 0u32;
     for _ in 0..6 {
-        let size_prefix = match wrpl::parser::read_variable_length_size(&mut reader) {
+        let size_prefix = match read_vlq_size(&mut reader) {
             Ok(Some((packet_size, _))) if packet_size > 0 && packet_size < 0x2000 => packet_size,
             _ => return None,
         };
@@ -148,10 +149,7 @@ fn try_parse_chat_at_offset(
         if let Err(_) = reader.read_exact(&mut packet_buf) {
             return None;
         }
-        let parsed_header = wrpl::parser::read_packet_header_from_stream(
-            &mut Cursor::new(&packet_buf),
-            last_timestamp,
-        );
+        let parsed_header = read_packet_header(&mut Cursor::new(&packet_buf), last_timestamp);
         let (ptype, timestamp, header_sz) = match parsed_header {
             Ok(Some((ptype, timestamp, header_sz))) => (ptype, timestamp, header_sz),
             _ => return None,
@@ -161,7 +159,7 @@ fn try_parse_chat_at_offset(
 
         if ptype == 3 {
             let payload = &packet_buf[header_sz..];
-            let chat = wrpl::parser::parse_chat_packet(payload, timestamp);
+            let chat = parse_chat_packet(payload, timestamp);
             if let Some(chat_info) = chat {
                 // sanity checks
                 if !chat_info.sender.is_empty()
