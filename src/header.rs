@@ -1,4 +1,5 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 
@@ -90,6 +91,8 @@ pub struct ReplayHeader {
     pub session_id_hex: u64,
     /// ???
     pub m_set_size: u32,
+    /// settings blk size
+    pub settings_size: u32,
     /// ???
     pub loc_name: String,
     /// since epoch.
@@ -102,6 +105,83 @@ pub struct ReplayHeader {
     pub battle_class: String,
     /// `killStreaksAircraftOrHelicopter_1` if nukes are available
     pub battle_kill_streak: String,
+    /// this is a calculated value, not an actual field.
+    pub _total_length: u64,
+}
+
+// FIXME: Hacky workarounds for missing fields.
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Replay settings, note that this doesn't follow naming convention. It is also prone
+/// to panicing.
+pub struct ReplaySettings {
+    pub level: String,
+    #[serde(rename = "type")]
+    pub mode_type: String,
+    pub environment: String,
+    pub weather: String,
+    pub locName: String,
+    pub locDesc: String,
+    pub scoreLimit: u32,
+    pub timeLimit: u32,
+    pub deathPenaltyMul: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub postfix: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ctaCaptureZoneEqualPenaltyMul: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowedKillStreaks: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub randomSpawnTeams: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remapAiTankModels: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub battleAreaColorPreset: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub showTacticalMapCellSize: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country_axis: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country_allies: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restoreType: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub optionalTakeOff: Option<bool>,
+    pub allowedUnitTypes: AllowedUnitTypes,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mission: Option<Vec<MissionSettings>>,
+    pub stars: StarsSettings,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllowedUnitTypes {
+    pub isAirplanesAllowed: bool,
+    pub isTanksAllowed: bool,
+    pub isShipsAllowed: bool,
+    pub isHelicoptersAllowed: bool,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MissionSettings {
+    pub difficulty: String,
+    pub useAlternativeMapCoord: bool,
+    pub scoreLimit: u32,
+    pub randomSpawnTeams: bool,
+    pub remapAiTankModels: bool,
+}
+
+#[allow(non_snake_case)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StarsSettings {
+    pub latitude: f32,
+    pub longitude: f32,
+    pub year: u16,
+    pub month: u8,
+    pub day: u8,
+    pub localTime: f32,
 }
 
 impl fmt::Display for ReplayHeader {
@@ -126,6 +206,7 @@ impl fmt::Display for ReplayHeader {
             self.session_id_hex, self.session_id_hex
         )?;
         writeln!(f, "MSet Size: {}", self.m_set_size)?;
+        writeln!(f, "Settings Size: {}", self.settings_size)?;
         writeln!(f, "Location Name: {}", self.loc_name)?;
         writeln!(f, "Start Time: {}", self.start_time)?;
         writeln!(f, "Time Limit: {}", self.time_limit)?;
@@ -195,8 +276,13 @@ pub fn parse_header(data: &[u8]) -> Result<ReplayHeader> {
     cursor.read_exact(&mut buffer)?;
     let m_set_size = u32::from_le_bytes(buffer);
 
-    // Skip padding (32 bytes)
-    cursor.seek(SeekFrom::Current(32))?;
+    // Read settings size
+    // FIXME: might be 16?
+    cursor.read_exact(&mut buffer)?;
+    let settings_size = u32::from_le_bytes(buffer);
+
+    // Skip padding (32->28 bytes)
+    cursor.seek(SeekFrom::Current(28))?;
 
     // Read loc_name (128 bytes)
     let loc_name = read_string(&mut cursor, 128)?;
@@ -222,6 +308,11 @@ pub fn parse_header(data: &[u8]) -> Result<ReplayHeader> {
     // Read battle_kill_streak (128 bytes)
     let battle_kill_streak = read_string(&mut cursor, 128)?;
 
+    let _total_length = cursor
+        .seek(SeekFrom::Current(0))?
+        .try_into()
+        .and_then(|_: u64| Ok(cursor.position()))?;
+
     Ok(ReplayHeader {
         magic,
         version,
@@ -235,12 +326,14 @@ pub fn parse_header(data: &[u8]) -> Result<ReplayHeader> {
         session_type,
         session_id_hex,
         m_set_size,
+        settings_size,
         loc_name,
         start_time,
         time_limit,
         score_limit,
         battle_class,
         battle_kill_streak,
+        _total_length,
     })
 }
 

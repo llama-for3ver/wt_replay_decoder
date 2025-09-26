@@ -40,7 +40,7 @@ struct Args {
     #[arg(long, default_value_t = false)]
     skip_zlib: bool,
 
-    /// Parse replay results data (requires header parsing).
+    /// Parse replay results and settings data. This will change sometime soon.
     #[arg(long, default_value_t = false)]
     parse_results: bool,
 }

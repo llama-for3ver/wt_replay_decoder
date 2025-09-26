@@ -1,4 +1,4 @@
-use crate::header::ReplayHeader;
+use crate::header::{ReplayHeader, ReplaySettings};
 use crate::packet::{parse_chat_packet, read_packet_header, read_vlq_size, PacketInfo};
 use crate::packet::{ChatInfo, ReplayPacketType};
 use crate::results::parse_replay_results_json;
@@ -237,6 +237,50 @@ pub fn process_replay_stream(
     let mut stats = process_replay_data(replay_data, start_offset, skip_zlib)?;
 
     if let Some(header) = header {
+        if header.settings_size > 0 {
+            // (client_2) 0x000004CA = 0x01
+            // https://github.com/Warthunder-Open-Source-Foundation/wt_blk/blob/master/src/blk/file.rs#L10
+            // using mimi here won't work as it uses memory size, not disk.
+            // also +2 is to skip over some mystery bytes
+            let hdr_size = usize::try_from(header._total_length)? + 2;
+            info!("Header size: {}", hdr_size);
+            let settings_size = header.settings_size as usize;
+            let settings_start = hdr_size;
+            let settings_end = settings_start.saturating_add(settings_size);
+            if settings_end <= replay_data.len() {
+                info!(
+                    "Parsing settings BLK at offset {} ({} bytes)",
+                    settings_start, settings_size
+                );
+                let blk_data = &replay_data[settings_start..settings_end];
+                match decompress_blk(blk_data) {
+                    Ok(json) => {
+                        println!("{}", &json);
+                        match serde_json::from_str::<ReplaySettings>(&json) {
+                            Ok(deserialized) => {
+                                stats.replay_settings = Some(deserialized);
+                                info!("Successfully parsed settings");
+                            }
+                            Err(e) => {
+                                bail!("Failed to deserialize settings: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse settings: {}", e);
+                    }
+                }
+            } else {
+                warn!(
+                    "Settings range {}..{} out of data bounds",
+                    settings_start, settings_end
+                );
+            }
+        }
+    }
+
+    // Then parse end-of-replay results if available
+    if let Some(header) = header {
         if header.rez_offset > 0 && header.rez_offset < replay_data.len() as u32 {
             info!(
                 "Attempting to parse end-of-replay results at offset {}",
@@ -270,6 +314,8 @@ pub struct ParsedReplay {
     pub packets: Vec<PacketInfo>,
     /// List of chat messages.
     pub chat_messages: Vec<ChatInfo>,
+    /// Parsed settings data(if available).
+    pub replay_settings: Option<ReplaySettings>,
     /// End-of-replay results data (if available).
     pub replay_results: Option<ReplayResults>,
 }

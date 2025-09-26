@@ -122,4 +122,25 @@ mod tests {
         assert_eq!(results.players.len(), 18);
         assert_eq!(results.players[0].player_info.platform, "win64")
     }
+
+    #[test]
+    /// Parse the replay file and check that settings_json is present and valid.
+    fn test_parse_client_settings() {
+        let file = std::fs::read("tests/replays/client_1.wrpl").unwrap();
+        let header = header::parse_header(&file).unwrap();
+
+        let replay_result = parser::process_replay_stream(&file, 2088, false, Some(&header));
+        assert!(
+            replay_result.is_ok(),
+            "process_replay_stream failed: {:#?}",
+            replay_result.err()
+        );
+        let replay = replay_result.unwrap();
+
+        let settings_json = &replay.replay_settings;
+        assert!(
+            settings_json.is_some(),
+            "settings_json was unexpectedly None"
+        );
+    }
 }
