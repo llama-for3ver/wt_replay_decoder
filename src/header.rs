@@ -8,6 +8,38 @@ pub struct Difficulty {
     pub difficulty_value: u8,
 }
 
+pub mod difficulty_value {
+    pub const ARCADE: i32 = 0x0000;
+    pub const REALISTIC: i32 = 0x0101;
+    pub const HARDCORE: i32 = 0x1010;
+}
+
+pub mod session_type {
+    /// planes, simulator battles
+    pub const AIR_SIM: u8 = 0x3c;
+    /// naval battles
+    pub const MARINE_BATTLE: u8 = 0x1a;
+    /// random battle
+    pub const RANDOM_BATTLE: u8 = 0x20;
+    /// test range
+    pub const CUSTOM_BATTLE: u8 = 0x40;
+    /// user missions
+    pub const USER_MISSION: u8 = 0x01;
+}
+
+pub mod local_player_country {
+    pub const COUNTRY_USA: u8 = 0x01;
+    pub const COUNTRY_GERMANY: u8 = 0x02;
+    pub const COUNTRY_USSR: u8 = 0x03;
+    pub const COUNTRY_BRITAIN: u8 = 0x04;
+    pub const COUNTRY_JAPAN: u8 = 0x05;
+    pub const COUNTRY_CHINA: u8 = 0x06;
+    pub const COUNTRY_ITALY: u8 = 0x07;
+    pub const COUNTRY_FRANCE: u8 = 0x08;
+    pub const COUNTRY_SWEDEN: u8 = 0x09;
+    pub const COUNTRY_ISRAEL: u8 = 0x0A;
+}
+
 // DifficultyCon = ct.ExprAdapter(ct.Bitwise(ct.FocusedSeq(
 //     'difficulty',
 //     'unk_nib' / ct.BitsInteger(4),
