@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 use flate2::read::ZlibDecoder;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
-use std::io::{self, BufRead, Cursor, Read};
+use std::io::{self, Cursor, Read};
 use std::sync::Arc;
 use wt_blk::blk;
 use wt_blk::blk::file::FileType;
