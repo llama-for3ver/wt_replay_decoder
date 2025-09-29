@@ -31,17 +31,17 @@ pub fn process_replay_data(
     let input_data = &data[start_offset as usize..];
 
     let mut reader = std::io::BufReader::new(create_reader(input_data, skip_zlib)?);
-    if !skip_zlib {
-        let peeked = reader.fill_buf().unwrap_or(&[]);
-        if peeked.len() >= 3 {
-            // second bytes seems to be E<anything> (E2, E6 i've seen)
-            // not sure why.
-            // additionally, some replays don't have what is matched...
-            if peeked[0] != 0x40 || peeked[2] != 0x08 {
-                warn!("Decompressed replay stream does not start with expected bytes.");
-            }
-        }
-    }
+    // if !skip_zlib {
+    //     let peeked = reader.fill_buf().unwrap_or(&[]);
+    //     if peeked.len() >= 3 {
+    //         // second bytes seems to be E<anything> (E2, E6 i've seen)
+    //         // not sure why.
+    //         // additionally, some replays don't have what is matched...
+    //         if peeked[0] != 0x40 || peeked[2] != 0x08 {
+    //             warn!("Decompressed replay stream does not start with expected bytes.");
+    //         }
+    //     }
+    // }
 
     let mut stats = ParsedReplay::default();
     let last_timestamp_ms = 0;
