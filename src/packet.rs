@@ -181,6 +181,19 @@ pub struct ChatInfo {
     pub is_enemy: Option<u8>,
 }
 
+/// Information about an award packet (MPI)
+#[derive(Debug)]
+pub struct AwardInfo {
+    /// Timestamp in milliseconds.
+    pub timestamp_ms: u32,
+    /// Award type byte.
+    pub award_type: u8,
+    /// Player index byte.
+    pub player: u8,
+    /// Award name.
+    pub award_name: String,
+}
+
 /// Parses the payload of a chat packet. This is type `4`.
 pub fn parse_chat_packet(payload: &[u8], timestamp_ms: u32) -> Option<ChatInfo> {
     let mut cursor = Cursor::new(payload);
@@ -263,4 +276,64 @@ pub fn parse_chat_packet(payload: &[u8], timestamp_ms: u32) -> Option<ChatInfo> 
             None
         }
     }
+}
+
+/// Parses the payload of an award MPI packet (0x00025878).
+pub fn parse_award_packet(payload: &[u8], timestamp_ms: u32) -> Option<AwardInfo> {
+    let mut cursor = Cursor::new(payload);
+    // signature: 4 bytes
+    let mut sig = [0u8; 4];
+    if cursor.read_exact(&mut sig).is_err() {
+        return None;
+    }
+    if sig != [0x00, 0x02, 0x58, 0x78] {
+        return None;
+    }
+    let mut marker = [0u8; 1];
+    cursor.read_exact(&mut marker).ok()?;
+
+    // AwardType (1 byte)
+    let mut at = [0u8; 1];
+    cursor.read_exact(&mut at).ok()?;
+    let award_type = at[0];
+
+    // Skip marker 0x003e (2 bytes)
+    let mut b003e = [0u8; 2];
+    if cursor.read_exact(&mut b003e).is_err() {
+        return None;
+    }
+
+    // player
+    let mut b_player = [0u8; 1];
+    if cursor.read_exact(&mut b_player).is_err() {
+        return None;
+    }
+    let player = b_player[0];
+    // Skip marker 0x000000 (3 bytes)
+    let mut b000000 = [0u8; 3];
+    if cursor.read_exact(&mut b000000).is_err() {
+        return None;
+    }
+
+    // award name
+    let mut len_buf = [0u8; 1];
+    if cursor.read_exact(&mut len_buf).is_err() {
+        return None;
+    }
+
+    let name_len = len_buf[0] as usize;
+    let mut name_buf = vec![0u8; name_len];
+    if cursor.read_exact(&mut name_buf).is_err() {
+        return None;
+    }
+    let award_name = String::from_utf8_lossy(&name_buf).into_owned();
+
+    // remainder
+    let _ = cursor.read_to_end(&mut Vec::new());
+    Some(AwardInfo {
+        timestamp_ms,
+        award_type,
+        player,
+        award_name,
+    })
 }

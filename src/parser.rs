@@ -1,6 +1,8 @@
-use crate::header::{ReplayHeader, ReplaySettings};
-use crate::packet::{parse_chat_packet, read_packet_header, read_vlq_size, PacketInfo};
-use crate::packet::{ChatInfo, ReplayPacketType};
+use crate::header::{parse_header, ReplayHeader, ReplaySettings};
+use crate::packet::{
+    parse_award_packet, parse_chat_packet, read_packet_header, read_vlq_size, PacketInfo,
+};
+use crate::packet::{AwardInfo, ChatInfo, ReplayPacketType};
 use crate::results::parse_replay_results_json;
 use anyhow::{bail, Context, Result};
 use flate2::read::ZlibDecoder;
@@ -154,6 +156,13 @@ pub fn process_replay_data(
                             stats.chat_messages.push(chat_info);
                         }
                     }
+                    if packet_type_val == 4 {
+                        // MPI, but for now just do awards lol
+                        if let Some(award_info) = parse_award_packet(payload_content, timestamp_ms)
+                        {
+                            stats.award_messages.push(award_info);
+                        }
+                    }
                 }
                 Ok(None) => {
                     warn!("Unexpected EOF reading packet header from payload buffer. Skipping payload.");
@@ -301,6 +310,24 @@ pub fn process_replay_stream(
     Ok(stats)
 }
 
+pub fn process_parted_replay(buffers: &[Vec<u8>], skip_zlib: bool) -> Result<ParsedReplay> {
+    if buffers.is_empty() {
+        bail!("No replay parts provided");
+    }
+    let mut combined = ParsedReplay::default();
+    for buf in buffers {
+        let hdr = parse_header(buf).context("parsing replay segment header")?;
+        let offset = hdr._total_length + 2 + hdr.settings_size as u64;
+        let part = process_replay_stream(buf, offset, skip_zlib, None)?;
+        combined.packet_count += part.packet_count;
+        combined.total_decompressed_bytes += part.total_decompressed_bytes;
+        combined.packets.extend(part.packets);
+        combined.chat_messages.extend(part.chat_messages);
+        combined.award_messages.extend(part.award_messages);
+    }
+    Ok(combined)
+}
+
 /// The result of a parsed replay.
 #[derive(Debug, Default)]
 pub struct ParsedReplay {
@@ -314,6 +341,8 @@ pub struct ParsedReplay {
     pub packets: Vec<PacketInfo>,
     /// List of chat messages.
     pub chat_messages: Vec<ChatInfo>,
+    /// List of award messages.
+    pub award_messages: Vec<AwardInfo>,
     /// Parsed settings data(if available).
     pub replay_settings: Option<ReplaySettings>,
     /// End-of-replay results data (if available).
