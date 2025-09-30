@@ -1,6 +1,7 @@
 use crate::header::{parse_header, ReplayHeader, ReplaySettings};
 use crate::packet::{
-    parse_award_packet, parse_chat_packet, read_packet_header, read_vlq_size, PacketInfo,
+    parse_award_packet, parse_chat_packet, parse_kill_packet, read_packet_header, read_vlq_size,
+    PacketInfo,
 };
 use crate::packet::{AwardInfo, ChatInfo, ReplayPacketType};
 use crate::results::parse_replay_results_json;
@@ -157,10 +158,45 @@ pub fn process_replay_data(
                         }
                     }
                     if packet_type_val == 4 {
-                        // MPI, but for now just do awards lol
-                        if let Some(award_info) = parse_award_packet(payload_content, timestamp_ms)
-                        {
-                            stats.award_messages.push(award_info);
+                        if payload_content.len() >= 4 {
+                            let signature = &payload_content[..4];
+                            debug!("MPI packet detected. Signature: {:02X?}", signature);
+
+                            // 00 02 58 78 - Awards      (PacketTypeMPI_Award)
+                            // 00 02 58 58 - Kill screen? (PacketTypeMPI_Kill)
+                            // 00 02 58 74 - Model info (steering)
+                            // 00 03 58 43 - Model info (turret angles)
+
+                            match signature {
+                                [0x00, 0x02, 0x58, 0x78] => {
+                                    debug!("MPI Award signature matched");
+                                    if let Some(award_info) =
+                                        parse_award_packet(payload_content, timestamp_ms)
+                                    {
+                                        stats.award_messages.push(award_info);
+                                    }
+                                }
+                                [0x00, 0x02, 0x58, 0x58] => {
+                                    debug!("MPI Kill signature matched");
+                                    if let Some(kill_info) =
+                                        parse_kill_packet(payload_content, timestamp_ms)
+                                    {
+                                        // stats.kill_messages.push(kill_info);
+                                        info!("{:?}", kill_info)
+                                    }
+                                }
+                                [0x00, 0x02, 0x58, 0x74] => {
+                                    debug!("MPI Model info (steering) signature matched");
+                                }
+                                [0x00, 0x03, 0x58, 0x43] => {
+                                    debug!("MPI Model info (turret angles) signature matched");
+                                }
+                                unknown => {
+                                    debug!("Unknown MPI signature: {:02X?}", unknown);
+                                }
+                            }
+                        } else {
+                            warn!("MPI packet too short to detect signature");
                         }
                     }
                 }
@@ -299,6 +335,7 @@ pub fn process_replay_stream(
 
             if stats.replay_results.is_some() {
                 info!("Successfully parsed end-of-replay results");
+                println!("{:?}", stats.replay_settings);
             } else {
                 warn!("Failed to parse end-of-replay results (compression not yet implemented)");
             }

@@ -1,8 +1,7 @@
 use anyhow::Context;
+use anyhow::{bail, Result};
 use log::{debug, error, warn};
 use std::io::{self, Cursor, Read};
-
-use anyhow::{bail, Result};
 
 use crate::utils::hex;
 
@@ -335,5 +334,60 @@ pub fn parse_award_packet(payload: &[u8], timestamp_ms: u32) -> Option<AwardInfo
         award_type,
         player,
         award_name,
+    })
+}
+
+#[derive(Debug)]
+pub struct KillInfo {
+    pub timestamp_ms: u32,
+    pub control: u8,
+    pub damage_type: u8,
+    pub killer_id: u8,
+    pub killer_vehicle: String,
+}
+
+/// Parses the payload of a kill MPI packet.
+pub fn parse_kill_packet(payload: &[u8], timestamp_ms: u32) -> Option<KillInfo> {
+    let mut cursor = Cursor::new(payload);
+
+    let mut signature = [0u8; 4];
+    let _ = cursor.read_exact(&mut signature);
+
+    // Always 0xf0 marker (skip)
+    let mut always_0xf0 = [0u8; 1];
+    let _ = cursor.read_exact(&mut always_0xf0);
+
+    let mut control = [0u8; 1];
+    let _ = cursor.read_exact(&mut control);
+    let control_byte = control[0];
+    let damage_type = control_byte & 0xF0;
+
+    // always 0x00fe3f
+    let mut always_0x00fe3f = [0u8; 3];
+    let _ = cursor.read_exact(&mut always_0x00fe3f);
+
+    // killer ID
+    let mut killer_id_buf = [0u8; 1];
+    let _ = cursor.read_exact(&mut killer_id_buf);
+    let killer_id = killer_id_buf[0];
+
+    let mut always_0x000000 = [0u8; 3];
+    let _ = cursor.read_exact(&mut always_0x000000);
+
+    // killer Vehicle id with len prefix
+    let mut vehicle_len_buf = [0u8; 1];
+    let _ = cursor.read_exact(&mut vehicle_len_buf);
+    let vehicle_len = vehicle_len_buf[0] as usize;
+
+    let mut vehicle_buf = vec![0u8; vehicle_len];
+    let _ = cursor.read_exact(&mut vehicle_buf);
+    let killer_vehicle = String::from_utf8(vehicle_buf).unwrap_or_else(|_| String::new());
+
+    Some(KillInfo {
+        timestamp_ms,
+        control: control_byte,
+        damage_type,
+        killer_id,
+        killer_vehicle,
     })
 }
