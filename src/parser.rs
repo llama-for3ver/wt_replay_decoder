@@ -45,7 +45,7 @@ pub fn process_replay_data(
     // }
 
     let mut stats = ParsedReplay::default();
-    let last_timestamp_ms = 0;
+    let mut last_timestamp_ticks: u32 = 0;
 
     loop {
         debug!(
@@ -119,17 +119,17 @@ pub fn process_replay_data(
                 bail!("Failed to read packet payload");
             }
         }
-
         stats.total_decompressed_bytes += total_bytes_read_for_payload as u64;
 
         if total_bytes_read_for_payload > 0 {
             let mut payload_cursor = Cursor::new(&packet_data_with_header);
 
-            match read_packet_header(&mut payload_cursor, last_timestamp_ms) {
-                Ok(Some((packet_type_val, timestamp_ms, header_bytes_read))) => {
+            match read_packet_header(&mut payload_cursor, last_timestamp_ticks) {
+                Ok(Some((packet_type_val, timestamp_ticks, header_bytes_read))) => {
+                    last_timestamp_ticks = timestamp_ticks;
                     debug!(
                         "Parsed Header ({} bytes): Type={}, Timestamp={}ms",
-                        header_bytes_read, packet_type_val, timestamp_ms
+                        header_bytes_read, packet_type_val, timestamp_ticks
                     );
 
                     let header_len = header_bytes_read;
@@ -148,12 +148,13 @@ pub fn process_replay_data(
                             8 => ReplayPacketType::ReplayHeaderInfo,
                             _ => ReplayPacketType::Unknown,
                         },
-                        timestamp_ms,
+                        timestamp_ticks,
                         payload: payload_content.to_vec(),
                     });
 
                     if packet_type_val == 3 {
-                        if let Some(chat_info) = parse_chat_packet(payload_content, timestamp_ms) {
+                        if let Some(chat_info) = parse_chat_packet(payload_content, timestamp_ticks)
+                        {
                             stats.chat_messages.push(chat_info);
                         }
                     }
@@ -171,7 +172,7 @@ pub fn process_replay_data(
                                 [0x00, 0x02, 0x58, 0x78] => {
                                     debug!("MPI Award signature matched");
                                     if let Some(award_info) =
-                                        parse_award_packet(payload_content, timestamp_ms)
+                                        parse_award_packet(payload_content, timestamp_ticks)
                                     {
                                         stats.award_messages.push(award_info);
                                     }
@@ -179,7 +180,7 @@ pub fn process_replay_data(
                                 [0x00, 0x02, 0x58, 0x58] => {
                                     debug!("MPI Kill signature matched");
                                     if let Some(kill_info) =
-                                        parse_kill_packet(payload_content, timestamp_ms)
+                                        parse_kill_packet(payload_content, timestamp_ticks)
                                     {
                                         // stats.kill_messages.push(kill_info);
                                         info!("{:?}", kill_info)

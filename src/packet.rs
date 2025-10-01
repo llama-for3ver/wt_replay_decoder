@@ -95,7 +95,7 @@ pub fn read_vlq_size<R: Read>(stream: &mut R) -> Result<Option<(u32, usize)>> {
 
 pub fn read_packet_header<R: Read>(
     stream: &mut R,
-    last_timestamp_ms: u32,
+    last_timestamp_ticks: u32,
 ) -> Result<Option<(u8, u32, usize)>> {
     let mut first_byte_buf = [0u8; 1];
 
@@ -106,7 +106,7 @@ pub fn read_packet_header<R: Read>(
     }
     let first_byte = first_byte_buf[0];
     let mut bytes_read_for_header = 1;
-    let mut timestamp_ms = last_timestamp_ms;
+    let mut timestamp_ticks = last_timestamp_ticks;
     let packet_type_val: u8;
 
     if (first_byte & 0x10) != 0 {
@@ -117,12 +117,16 @@ pub fn read_packet_header<R: Read>(
         let mut ts_bytes = [0u8; 4];
         match stream.read_exact(&mut ts_bytes) {
             Ok(_) => {
-                timestamp_ms = u32::from_le_bytes(ts_bytes);
+                timestamp_ticks = u32::from_le_bytes(ts_bytes);
                 bytes_read_for_header += 4;
             }
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
                 warn!("Unexpected EOF reading timestamp after type byte {:#02x}. Using last known timestamp.", packet_type_val);
-                return Ok(Some((packet_type_val, timestamp_ms, bytes_read_for_header)));
+                return Ok(Some((
+                    packet_type_val,
+                    timestamp_ticks,
+                    bytes_read_for_header,
+                )));
             }
             Err(e) => {
                 return Err(e).context("Failed to read timestamp bytes");
@@ -130,7 +134,11 @@ pub fn read_packet_header<R: Read>(
         }
     }
 
-    Ok(Some((packet_type_val, timestamp_ms, bytes_read_for_header)))
+    Ok(Some((
+        packet_type_val,
+        timestamp_ticks,
+        bytes_read_for_header,
+    )))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,7 +169,7 @@ pub enum ReplayPacketType {
 #[allow(dead_code)]
 pub struct PacketInfo {
     pub packet_type: ReplayPacketType,
-    pub timestamp_ms: u32,
+    pub timestamp_ticks: u32,
     pub payload: Vec<u8>,
 }
 
@@ -169,7 +177,7 @@ pub struct PacketInfo {
 #[allow(dead_code)]
 pub struct ChatInfo {
     /// Timestamp in milliseconds
-    pub timestamp_ms: u32,
+    pub timestamp_ticks: u32,
     /// The nick of the sender.
     pub sender: String,
     /// The message content
@@ -184,7 +192,7 @@ pub struct ChatInfo {
 #[derive(Debug)]
 pub struct AwardInfo {
     /// Timestamp in milliseconds.
-    pub timestamp_ms: u32,
+    pub timestamp_ticks: u32,
     /// Award type byte.
     pub award_type: u8,
     /// Player index byte.
@@ -194,7 +202,7 @@ pub struct AwardInfo {
 }
 
 /// Parses the payload of a chat packet. This is type `4`.
-pub fn parse_chat_packet(payload: &[u8], timestamp_ms: u32) -> Option<ChatInfo> {
+pub fn parse_chat_packet(payload: &[u8], timestamp_ticks: u32) -> Option<ChatInfo> {
     let mut cursor = Cursor::new(payload);
 
     fn read_u8(cur: &mut Cursor<&[u8]>) -> Result<u8> {
@@ -254,11 +262,11 @@ pub fn parse_chat_packet(payload: &[u8], timestamp_ms: u32) -> Option<ChatInfo> 
 
         debug!(
             "[Chat] Decoded message - Timestamp: {} ms, Sender: '{}', Message: '{}', Channel: {:?}, Enemy: {:?}",
-            timestamp_ms, sender_name, message, channel_type, is_enemy
+            timestamp_ticks, sender_name, message, channel_type, is_enemy
         );
 
         Ok(ChatInfo {
-            timestamp_ms,
+            timestamp_ticks,
             sender: sender_name,
             message,
             channel_type,
@@ -278,7 +286,7 @@ pub fn parse_chat_packet(payload: &[u8], timestamp_ms: u32) -> Option<ChatInfo> 
 }
 
 /// Parses the payload of an award MPI packet (0x00025878).
-pub fn parse_award_packet(payload: &[u8], timestamp_ms: u32) -> Option<AwardInfo> {
+pub fn parse_award_packet(payload: &[u8], timestamp_ticks: u32) -> Option<AwardInfo> {
     let mut cursor = Cursor::new(payload);
     // signature: 4 bytes
     let mut sig = [0u8; 4];
@@ -330,7 +338,7 @@ pub fn parse_award_packet(payload: &[u8], timestamp_ms: u32) -> Option<AwardInfo
     // remainder
     let _ = cursor.read_to_end(&mut Vec::new());
     Some(AwardInfo {
-        timestamp_ms,
+        timestamp_ticks,
         award_type,
         player,
         award_name,
@@ -339,7 +347,7 @@ pub fn parse_award_packet(payload: &[u8], timestamp_ms: u32) -> Option<AwardInfo
 
 #[derive(Debug)]
 pub struct KillInfo {
-    pub timestamp_ms: u32,
+    pub timestamp_ticks: u32,
     pub control: u8,
     pub damage_type: u8,
     pub killer_id: u8,
@@ -347,7 +355,7 @@ pub struct KillInfo {
 }
 
 /// Parses the payload of a kill MPI packet.
-pub fn parse_kill_packet(payload: &[u8], timestamp_ms: u32) -> Option<KillInfo> {
+pub fn parse_kill_packet(payload: &[u8], timestamp_ticks: u32) -> Option<KillInfo> {
     let mut cursor = Cursor::new(payload);
 
     let mut signature = [0u8; 4];
@@ -384,7 +392,7 @@ pub fn parse_kill_packet(payload: &[u8], timestamp_ms: u32) -> Option<KillInfo> 
     let killer_vehicle = String::from_utf8(vehicle_buf).unwrap_or_else(|_| String::new());
 
     Some(KillInfo {
-        timestamp_ms,
+        timestamp_ticks,
         control: control_byte,
         damage_type,
         killer_id,
