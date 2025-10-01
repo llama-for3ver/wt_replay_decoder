@@ -20,7 +20,9 @@ struct ReplayHeader {
     u64 sessionIdHex;
     padding[4];
     u32 mSetSize;
-    padding[32];
+    padding[27];
+    u8 playerCountry;
+    padding[4];
     char locName[128];
     u32 startTime;
     u32 timeLimit;

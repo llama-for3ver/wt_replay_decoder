@@ -1,5 +1,7 @@
 pub mod header;
+pub mod packet;
 pub mod parser;
+pub mod results;
 pub mod utils;
 
 #[cfg(test)]
@@ -119,5 +121,85 @@ mod tests {
         // TODO: Add more assertions for player info
         assert_eq!(results.players.len(), 18);
         assert_eq!(results.players[0].player_info.platform, "win64")
+    }
+
+    #[test]
+    fn test_parse_client_settings() {
+        let file = std::fs::read("tests/replays/client_1.wrpl").unwrap();
+        let header = header::parse_header(&file).unwrap();
+
+        let replay_result = parser::process_replay_stream(&file, 2088, false, Some(&header));
+        assert!(
+            replay_result.is_ok(),
+            "process_replay_stream failed: {:#?}",
+            replay_result.err()
+        );
+        let replay = replay_result.unwrap();
+
+        let settings_opt = &replay.replay_settings;
+        assert!(
+            settings_opt.is_some(),
+            "settings_json was unexpectedly None"
+        );
+
+        let settings = settings_opt.as_ref().unwrap();
+
+        assert_eq!(settings.level, "levels/avg_egypt_sinai.bin");
+        assert_eq!(settings.mode_type, "domination");
+        assert_eq!(settings.environment, "Day");
+        assert_eq!(settings.weather, "clear");
+        assert_eq!(settings.locName, "missions/_Conq1;sinai_02/name");
+        assert_eq!(settings.locDesc, "sinai_02/desc;missions/_Conq/desc");
+        assert_eq!(settings.scoreLimit, 14000);
+        assert_eq!(settings.timeLimit, 25);
+        assert!((settings.deathPenaltyMul - 1.0).abs() < 1e-6);
+        assert_eq!(settings.postfix, Some("_Conq1".to_string()));
+        assert!((settings.ctaCaptureZoneEqualPenaltyMul.unwrap() - 0.0).abs() < 1e-6);
+        assert_eq!(settings.allowedKillStreaks, Some(true));
+        assert_eq!(settings.randomSpawnTeams, Some(true));
+        assert_eq!(settings.remapAiTankModels, Some(true));
+        assert_eq!(
+            settings.battleAreaColorPreset.as_deref(),
+            Some("battleArea")
+        );
+        assert_eq!(settings.showTacticalMapCellSize, Some(true));
+
+        // allowedUnitTypes subfields
+        {
+            assert_eq!(settings.allowedUnitTypes.isAirplanesAllowed, true);
+            assert_eq!(settings.allowedUnitTypes.isTanksAllowed, true);
+            assert_eq!(settings.allowedUnitTypes.isShipsAllowed, false);
+            assert_eq!(settings.allowedUnitTypes.isHelicoptersAllowed, true);
+        }
+
+        // mission array
+        {
+            let mission = &settings.mission;
+            assert_eq!(mission.as_ref().unwrap().len(), 2);
+
+            let m0 = &mission.as_ref().unwrap()[0];
+            assert_eq!(m0.difficulty, "realistic");
+            assert_eq!(m0.useAlternativeMapCoord, false);
+            assert_eq!(m0.scoreLimit, 16000);
+            assert_eq!(m0.randomSpawnTeams, true);
+            assert_eq!(m0.remapAiTankModels, true);
+
+            let m1 = &mission.as_ref().unwrap()[1];
+            assert_eq!(m1.difficulty, "hardcore");
+            assert_eq!(m1.useAlternativeMapCoord, false);
+            assert_eq!(m1.scoreLimit, 18000);
+            assert_eq!(m1.randomSpawnTeams, true);
+            assert_eq!(m1.remapAiTankModels, true);
+        }
+
+        // stars object
+        {
+            assert!((settings.stars.latitude - 30.0).abs() < 1e-6);
+            assert!((settings.stars.longitude - 39.0).abs() < 1e-6);
+            assert_eq!(settings.stars.year, 1973);
+            assert_eq!(settings.stars.month, 6);
+            assert_eq!(settings.stars.day, 21);
+            assert!((settings.stars.localTime - 13.355265).abs() < 1e-6);
+        }
     }
 }

@@ -1,144 +1,19 @@
-use crate::header::ReplayHeader;
-use crate::utils::hex;
+use crate::header::{parse_header, ReplayHeader, ReplaySettings};
+use crate::packet::{
+    parse_award_packet, parse_chat_packet, parse_kill_packet, read_packet_header, read_vlq_size,
+    PacketInfo,
+};
+use crate::packet::{AwardInfo, ChatInfo, ReplayPacketType};
+use crate::results::parse_replay_results_json;
 use anyhow::{bail, Context, Result};
 use flate2::read::ZlibDecoder;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
-use std::io::{self, BufRead, Cursor, Read};
+use std::io::{self, Cursor, Read};
 use std::sync::Arc;
 use wt_blk::blk;
 use wt_blk::blk::file::FileType;
 use wt_blk::blk::name_map::NameMap;
-
-/// Reads a variable-length size prefix from the stream.
-pub fn read_variable_length_size<R: Read>(stream: &mut R) -> Result<Option<(u32, usize)>> {
-    let mut buf = [0u8; 1];
-
-    // read the first byte
-    match stream.read(&mut buf)? {
-        0 => return Ok(None), // clean EOF
-        1 => {}
-        _ => bail!("Unexpected read count when reading first byte of size prefix"),
-    }
-    let first_byte = buf[0];
-    let mut prefix_bytes_read: usize = 1;
-    let payload_size: i64;
-
-    if (first_byte & 0x80) != 0 {
-        // High bit SET (1xxxxxxx)
-        if (first_byte & 0x40) == 0 {
-            // 10xxxxxx -> 1 byte total
-            payload_size = (first_byte & 0x7F) as i64;
-        } else {
-            // 11xxxxxx -> Invalid case
-            bail!(
-                "Invalid first size prefix byte encountered: {:#02x}",
-                first_byte
-            );
-        }
-    } else {
-        // High bit CLEAR (0xxxxxxx)
-        if (first_byte & 0x40) != 0 {
-            // 01xxxxxx -> 2 bytes total
-            let mut b1_buf = [0u8; 1];
-            stream
-                .read_exact(&mut b1_buf)
-                .context("Failed to read 2nd byte of 2-byte size prefix")?;
-            prefix_bytes_read += 1;
-            payload_size = (((first_byte as i64) << 8) | (b1_buf[0] as i64)) ^ 0x4000;
-        } else if (first_byte & 0x20) != 0 {
-            // 001xxxxx -> 3 bytes total
-            let mut b1_b2_buf = [0u8; 2];
-            stream
-                .read_exact(&mut b1_b2_buf)
-                .context("Failed to read bytes 2-3 of 3-byte size prefix")?;
-            prefix_bytes_read += 2;
-            payload_size = (((first_byte as i64) << 16)
-                | ((b1_b2_buf[0] as i64) << 8)
-                | (b1_b2_buf[1] as i64))
-                ^ 0x200000;
-        } else if (first_byte & 0x10) != 0 {
-            // 0001xxxx -> 4 bytes total
-            let mut b1_b3_buf = [0u8; 3];
-            stream
-                .read_exact(&mut b1_b3_buf)
-                .context("Failed to read bytes 2-4 of 4-byte size prefix")?;
-            prefix_bytes_read += 3;
-            payload_size = (((first_byte as i64) << 24)
-                | ((b1_b3_buf[0] as i64) << 16)
-                | ((b1_b3_buf[1] as i64) << 8)
-                | (b1_b3_buf[2] as i64))
-                ^ 0x10000000;
-        } else {
-            // 0000xxxx -> 5 bytes total
-            let mut b1_b4_buf = [0u8; 4];
-            stream
-                .read_exact(&mut b1_b4_buf)
-                .context("Failed to read bytes 2-5 of 5-byte size prefix")?;
-            prefix_bytes_read += 4;
-            // little Endian u32 - use stdlib method
-            payload_size = u32::from_le_bytes(b1_b4_buf) as i64;
-        }
-    }
-
-    if payload_size < 0 {
-        warn!(
-            "Calculated negative payload size ({}). This bodes ill.",
-            payload_size
-        );
-    }
-
-    let final_size = payload_size.try_into().with_context(|| {
-        format!(
-            "Payload size {} cannot fit into u32 (prefix starts with {:#02x})",
-            payload_size, first_byte
-        )
-    })?;
-
-    Ok(Some((final_size, prefix_bytes_read)))
-}
-
-/// Reads packet type and timestamp from the start of a DECOMPRESSED stream/buffer.
-/// Returns `Ok(Some((packet_type, timestamp_ms, bytes_read)))` or `Ok(None)` on EOF.
-pub fn read_packet_header_from_stream<R: Read>(
-    stream: &mut R,
-    last_timestamp_ms: u32,
-) -> Result<Option<(u8, u32, usize)>> {
-    let mut first_byte_buf = [0u8; 1];
-
-    match stream.read(&mut first_byte_buf)? {
-        0 => return Ok(None), // clean EOF
-        1 => {}
-        _ => bail!("Unexpected read count reading first byte of packet header"),
-    }
-    let first_byte = first_byte_buf[0];
-    let mut bytes_read_for_header = 1;
-    let mut timestamp_ms = last_timestamp_ms;
-    let packet_type_val: u8;
-
-    if (first_byte & 0x10) != 0 {
-        // timestamp didn't change
-        packet_type_val = first_byte ^ 0x10;
-    } else {
-        packet_type_val = first_byte;
-        let mut ts_bytes = [0u8; 4];
-        match stream.read_exact(&mut ts_bytes) {
-            Ok(_) => {
-                timestamp_ms = u32::from_le_bytes(ts_bytes);
-                bytes_read_for_header += 4;
-            }
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                warn!("Unexpected EOF reading timestamp after type byte {:#02x}. Using last known timestamp.", packet_type_val);
-                return Ok(Some((packet_type_val, timestamp_ms, bytes_read_for_header)));
-            }
-            Err(e) => {
-                return Err(e).context("Failed to read timestamp bytes");
-            }
-        }
-    }
-
-    Ok(Some((packet_type_val, timestamp_ms, bytes_read_for_header)))
-}
 
 /// Process replay data (potentially compressed) from a byte slice.
 pub fn process_replay_data(
@@ -157,20 +32,20 @@ pub fn process_replay_data(
     let input_data = &data[start_offset as usize..];
 
     let mut reader = std::io::BufReader::new(create_reader(input_data, skip_zlib)?);
-    if !skip_zlib {
-        let peeked = reader.fill_buf().unwrap_or(&[]);
-        if peeked.len() >= 3 {
-            // second bytes seems to be E<anything> (E2, E6 i've seen)
-            // not sure why.
-            // additionally, some replays don't have what is matched...
-            if peeked[0] != 0x40 || peeked[2] != 0x08 {
-                warn!("Decompressed replay stream does not start with expected bytes.");
-            }
-        }
-    }
+    // if !skip_zlib {
+    //     let peeked = reader.fill_buf().unwrap_or(&[]);
+    //     if peeked.len() >= 3 {
+    //         // second bytes seems to be E<anything> (E2, E6 i've seen)
+    //         // not sure why.
+    //         // additionally, some replays don't have what is matched...
+    //         if peeked[0] != 0x40 || peeked[2] != 0x08 {
+    //             warn!("Decompressed replay stream does not start with expected bytes.");
+    //         }
+    //     }
+    // }
 
     let mut stats = ParsedReplay::default();
-    let last_timestamp_ms = 0;
+    let mut last_timestamp_ticks: u32 = 0;
 
     loop {
         debug!(
@@ -178,24 +53,23 @@ pub fn process_replay_data(
             stats.packet_count, stats.total_decompressed_bytes
         );
 
-        let (decompressed_payload_size, prefix_bytes_read) =
-            match read_variable_length_size(&mut reader) {
-                Ok(Some((size, bytes_read))) => (size, bytes_read),
-                Ok(None) => {
-                    debug!("EOF reached while reading packet size prefix. End of stream.");
-                    break;
-                }
-                Err(e) => {
-                    if let Some(io_err) = e.downcast_ref::<io::Error>() {
-                        if io_err.kind() == io::ErrorKind::UnexpectedEof {
-                            warn!("Incomplete packet size prefix at end of stream: {}", e);
-                            break; // treat as EOF
-                        }
+        let (decompressed_payload_size, prefix_bytes_read) = match read_vlq_size(&mut reader) {
+            Ok(Some((size, bytes_read))) => (size, bytes_read),
+            Ok(None) => {
+                debug!("EOF reached while reading packet size prefix. End of stream.");
+                break;
+            }
+            Err(e) => {
+                if let Some(io_err) = e.downcast_ref::<io::Error>() {
+                    if io_err.kind() == io::ErrorKind::UnexpectedEof {
+                        warn!("Incomplete packet size prefix at end of stream: {}", e);
+                        break; // treat as EOF
                     }
-                    error!("Error reading packet size prefix: {:?}", e);
-                    bail!("Failed to read or parse packet size prefix");
                 }
-            };
+                error!("Error reading packet size prefix: {:?}", e);
+                bail!("Failed to read or parse packet size prefix");
+            }
+        };
 
         debug!(
             "Read size prefix ({} decomp. bytes): Expected payload size = {} bytes",
@@ -245,17 +119,17 @@ pub fn process_replay_data(
                 bail!("Failed to read packet payload");
             }
         }
-
         stats.total_decompressed_bytes += total_bytes_read_for_payload as u64;
 
         if total_bytes_read_for_payload > 0 {
             let mut payload_cursor = Cursor::new(&packet_data_with_header);
 
-            match read_packet_header_from_stream(&mut payload_cursor, last_timestamp_ms) {
-                Ok(Some((packet_type_val, timestamp_ms, header_bytes_read))) => {
+            match read_packet_header(&mut payload_cursor, last_timestamp_ticks) {
+                Ok(Some((packet_type_val, timestamp_ticks, header_bytes_read))) => {
+                    last_timestamp_ticks = timestamp_ticks;
                     debug!(
                         "Parsed Header ({} bytes): Type={}, Timestamp={}ms",
-                        header_bytes_read, packet_type_val, timestamp_ms
+                        header_bytes_read, packet_type_val, timestamp_ticks
                     );
 
                     let header_len = header_bytes_read;
@@ -274,13 +148,56 @@ pub fn process_replay_data(
                             8 => ReplayPacketType::ReplayHeaderInfo,
                             _ => ReplayPacketType::Unknown,
                         },
-                        timestamp_ms,
+                        timestamp_ticks,
                         payload: payload_content.to_vec(),
                     });
 
                     if packet_type_val == 3 {
-                        if let Some(chat_info) = parse_chat_packet(payload_content, timestamp_ms) {
+                        if let Some(chat_info) = parse_chat_packet(payload_content, timestamp_ticks)
+                        {
                             stats.chat_messages.push(chat_info);
+                        }
+                    }
+                    if packet_type_val == 4 {
+                        if payload_content.len() >= 4 {
+                            let signature = &payload_content[..4];
+                            debug!("MPI packet detected. Signature: {:02X?}", signature);
+
+                            // 00 02 58 78 - Awards      (PacketTypeMPI_Award)
+                            // 00 02 58 58 - Kill screen? (PacketTypeMPI_Kill)
+                            // 00 02 58 74 - Model info (steering)
+                            // 00 03 58 43 - Model info (turret angles)
+
+                            match signature {
+                                [0x00, 0x02, 0x58, 0x78] => {
+                                    debug!("MPI Award signature matched");
+                                    if let Some(award_info) =
+                                        parse_award_packet(payload_content, timestamp_ticks)
+                                    {
+                                        stats.award_messages.push(award_info);
+                                    }
+                                }
+                                [0x00, 0x02, 0x58, 0x58] => {
+                                    debug!("MPI Kill signature matched");
+                                    if let Some(kill_info) =
+                                        parse_kill_packet(payload_content, timestamp_ticks)
+                                    {
+                                        // stats.kill_messages.push(kill_info);
+                                        info!("{:?}", kill_info)
+                                    }
+                                }
+                                [0x00, 0x02, 0x58, 0x74] => {
+                                    debug!("MPI Model info (steering) signature matched");
+                                }
+                                [0x00, 0x03, 0x58, 0x43] => {
+                                    debug!("MPI Model info (turret angles) signature matched");
+                                }
+                                unknown => {
+                                    debug!("Unknown MPI signature: {:02X?}", unknown);
+                                }
+                            }
+                        } else {
+                            warn!("MPI packet too short to detect signature");
                         }
                     }
                 }
@@ -366,6 +283,50 @@ pub fn process_replay_stream(
     let mut stats = process_replay_data(replay_data, start_offset, skip_zlib)?;
 
     if let Some(header) = header {
+        if header.settings_size > 0 {
+            // (client_2) 0x000004CA = 0x01
+            // https://github.com/Warthunder-Open-Source-Foundation/wt_blk/blob/master/src/blk/file.rs#L10
+            // using mimi here won't work as it uses memory size, not disk.
+            // also +2 is to skip over some mystery bytes
+            let hdr_size = usize::try_from(header._total_length)? + 2;
+            info!("Header size: {}", hdr_size);
+            let settings_size = header.settings_size as usize;
+            let settings_start = hdr_size;
+            let settings_end = settings_start.saturating_add(settings_size);
+            if settings_end <= replay_data.len() {
+                info!(
+                    "Parsing settings BLK at offset {} ({} bytes)",
+                    settings_start, settings_size
+                );
+                let blk_data = &replay_data[settings_start..settings_end];
+                match decompress_blk(blk_data) {
+                    Ok(json) => {
+                        println!("{}", &json);
+                        match serde_json::from_str::<ReplaySettings>(&json) {
+                            Ok(deserialized) => {
+                                stats.replay_settings = Some(deserialized);
+                                info!("Successfully parsed settings");
+                            }
+                            Err(e) => {
+                                bail!("Failed to deserialize settings: {}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse settings: {}", e);
+                    }
+                }
+            } else {
+                warn!(
+                    "Settings range {}..{} out of data bounds",
+                    settings_start, settings_end
+                );
+            }
+        }
+    }
+
+    // Then parse end-of-replay results if available
+    if let Some(header) = header {
         if header.rez_offset > 0 && header.rez_offset < replay_data.len() as u32 {
             info!(
                 "Attempting to parse end-of-replay results at offset {}",
@@ -375,6 +336,7 @@ pub fn process_replay_stream(
 
             if stats.replay_results.is_some() {
                 info!("Successfully parsed end-of-replay results");
+                println!("{:?}", stats.replay_settings);
             } else {
                 warn!("Failed to parse end-of-replay results (compression not yet implemented)");
             }
@@ -384,6 +346,24 @@ pub fn process_replay_stream(
     }
 
     Ok(stats)
+}
+
+pub fn process_parted_replay(buffers: &[Vec<u8>], skip_zlib: bool) -> Result<ParsedReplay> {
+    if buffers.is_empty() {
+        bail!("No replay parts provided");
+    }
+    let mut combined = ParsedReplay::default();
+    for buf in buffers {
+        let hdr = parse_header(buf).context("parsing replay segment header")?;
+        let offset = hdr._total_length + 2 + hdr.settings_size as u64;
+        let part = process_replay_stream(buf, offset, skip_zlib, None)?;
+        combined.packet_count += part.packet_count;
+        combined.total_decompressed_bytes += part.total_decompressed_bytes;
+        combined.packets.extend(part.packets);
+        combined.chat_messages.extend(part.chat_messages);
+        combined.award_messages.extend(part.award_messages);
+    }
+    Ok(combined)
 }
 
 /// The result of a parsed replay.
@@ -399,6 +379,10 @@ pub struct ParsedReplay {
     pub packets: Vec<PacketInfo>,
     /// List of chat messages.
     pub chat_messages: Vec<ChatInfo>,
+    /// List of award messages.
+    pub award_messages: Vec<AwardInfo>,
+    /// Parsed settings data(if available).
+    pub replay_settings: Option<ReplaySettings>,
     /// End-of-replay results data (if available).
     pub replay_results: Option<ReplayResults>,
 }
@@ -461,137 +445,6 @@ pub struct PlayerReplayData {
     pub award_damage: i32,
     pub missile_evades: i32,
     pub lineup: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReplayPacketType {
-    /// End of replay marker.
-    EndMarker = 0,
-    /// Start of replay marker.
-    StartMarker = 1,
-    /// Aircraft state updates (positions, velocity, controls, etc.)
-    AircraftSmall = 2,
-    /// Chat messages - Sender, message, flags
-    Chat = 3,
-    /// Wrapped MPI messages (ObjectID, MessageID, payload)
-    MPI = 4,
-    /// Next segment marker.
-    NextSegment = 5,
-    /// ECS network data.
-    ECS = 6,
-    /// Full game state snapshot.
-    Snapshot = 7,
-    /// Initial header/settings data duplication.
-    ReplayHeaderInfo = 8,
-    /// Unknown packet type.
-    Unknown = 255,
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct PacketInfo {
-    pub packet_type: ReplayPacketType,
-    pub timestamp_ms: u32,
-    pub payload: Vec<u8>,
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub struct ChatInfo {
-    /// Timestamp in milliseconds
-    pub timestamp_ms: u32,
-    /// The nick of the sender.
-    pub sender: String,
-    /// The message content
-    pub message: String,
-    /// The type of channel. Believe it's for all, team, squad etc.
-    pub channel_type: Option<u8>,
-    /// Whether the sender is an enemy
-    pub is_enemy: Option<u8>,
-}
-
-/// Parses the payload of a chat packet.
-pub fn parse_chat_packet(payload: &[u8], timestamp_ms: u32) -> Option<ChatInfo> {
-    let mut cursor = Cursor::new(payload);
-
-    fn read_u8(cur: &mut Cursor<&[u8]>) -> Result<u8> {
-        let mut buf = [0u8; 1];
-        cur.read_exact(&mut buf).context("Failed to read byte")?;
-        Ok(buf[0])
-    }
-
-    fn read_string(cur: &mut Cursor<&[u8]>, len: usize, full_len: usize) -> Result<String> {
-        let current_pos = cur.position() as usize;
-        if current_pos + len > full_len {
-            bail!("Payload too short for string of length {}", len);
-        }
-        let mut buf = vec![0u8; len];
-        cur.read_exact(&mut buf)?;
-        String::from_utf8(buf).context("Failed to decode UTF-8 string")
-    }
-
-    if payload.is_empty() {
-        warn!("[Chat Type 3] Empty payload.");
-        return None;
-    }
-
-    let mut skip_buf = [0u8; 1];
-    if let Err(e) = cursor.read_exact(&mut skip_buf) {
-        if e.kind() == std::io::ErrorKind::UnexpectedEof {
-            warn!("[Chat Type 3] Payload was empty when trying to read subtype/flag byte.");
-        } else {
-            error!("[Chat Type 3] Error reading subtype/flag byte: {:?}", e);
-        }
-        return None;
-    }
-
-    if cursor.position() as usize >= payload.len() {
-        warn!("[Chat Type 3] Payload contained only the initial subtype/flag byte.");
-        return None;
-    }
-
-    match (|| -> Result<ChatInfo> {
-        let sender_len = read_u8(&mut cursor)? as usize;
-        let sender_name = read_string(&mut cursor, sender_len, payload.len())?;
-
-        let message_len = read_u8(&mut cursor)? as usize;
-        let message = read_string(&mut cursor, message_len, payload.len())?;
-
-        let remaining = payload.len() as u64 - cursor.position();
-        let channel_type = if remaining >= 1 {
-            Some(read_u8(&mut cursor)?)
-        } else {
-            None
-        };
-        let is_enemy = if remaining >= 2 {
-            Some(read_u8(&mut cursor)?)
-        } else {
-            None
-        };
-
-        debug!(
-            "[Chat] Decoded message - Timestamp: {} ms, Sender: '{}', Message: '{}', Channel: {:?}, Enemy: {:?}",
-            timestamp_ms, sender_name, message, channel_type, is_enemy
-        );
-
-        Ok(ChatInfo {
-            timestamp_ms,
-            sender: sender_name,
-            message,
-            channel_type,
-            is_enemy,
-        })
-    })() {
-        Ok(chat_info) => Some(chat_info),
-        Err(e) => {
-            error!(
-                "[Chat Type 3] Error parsing packet payload: {:?}. Payload start: {}...",
-                e,
-                hex::encode(&payload[..std::cmp::min(payload.len(), 30)])
-            );
-            None
-        }
-    }
 }
 
 /// Parses end-of-replay results from offset.
@@ -662,234 +515,4 @@ fn decompress_blk(compressed_data: &[u8]) -> Result<String> {
         .context("Couldn't parse BLK JSON output (UTF-8 conversion failed)")?;
 
     Ok(json_output)
-}
-
-pub fn parse_replay_results_json(json_data: &str) -> Result<ReplayResults> {
-    let json_value: serde_json::Value =
-        serde_json::from_str(json_data).context("Failed to parse JSON")?;
-
-    let obj = json_value
-        .as_object()
-        .ok_or_else(|| anyhow::anyhow!("Root JSON is not an object"))?;
-
-    let status = obj
-        .get("status")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-
-    let time_played = obj
-        .get("timePlayed")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-
-    let author_user_id = obj
-        .get("authorUserId")
-        .and_then(|v| v.as_str())
-        .unwrap_or("-1")
-        .to_string();
-
-    let author = obj
-        .get("author")
-        .and_then(|v| v.as_str())
-        .unwrap_or("server")
-        .to_string();
-
-    let mut players = Vec::new();
-
-    if let Some(player_array) = obj.get("player").and_then(|v| v.as_array()) {
-        if let Some(ui_scripts_data) = obj.get("uiScriptsData").and_then(|v| v.as_object()) {
-            if let Some(players_info) = ui_scripts_data
-                .get("playersInfo")
-                .and_then(|v| v.as_object())
-            {
-                for player_data in player_array {
-                    if let Some(player_obj) = player_data.as_object() {
-                        let user_id_str = player_obj
-                            .get("userId")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-
-                        let mut player_info = None;
-                        for (_, info_value) in players_info {
-                            if let Some(info_obj) = info_value.as_object() {
-                                let info_id =
-                                    info_obj.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-
-                                if info_id.to_string() == user_id_str
-                                    || user_id_str.parse::<u64>().unwrap_or(0) == info_id
-                                {
-                                    player_info = Some(PlayerInfo {
-                                        user_id: user_id_str.clone(),
-                                        username: info_obj
-                                            .get("name")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string(),
-                                        squadron_id: info_obj
-                                            .get("clanId")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string(),
-                                        squadron_tag: info_obj
-                                            .get("squadronTag")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string(),
-                                        platform: info_obj
-                                            .get("platform")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("")
-                                            .to_string(),
-                                    });
-                                    break;
-                                }
-                            }
-                        }
-
-                        if let Some(info) = player_info {
-                            let mut lineup = Vec::new();
-                            for (_, info_value) in players_info {
-                                if let Some(info_obj) = info_value.as_object() {
-                                    let info_id =
-                                        info_obj.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-
-                                    if info_id.to_string() == user_id_str
-                                        || user_id_str.parse::<u64>().unwrap_or(0) == info_id
-                                    {
-                                        if let Some(crafts) =
-                                            info_obj.get("crafts").and_then(|v| v.as_object())
-                                        {
-                                            for (_, craft_name) in crafts {
-                                                if let Some(name) = craft_name.as_str() {
-                                                    lineup.push(name.to_string());
-                                                }
-                                            }
-                                        }
-                                        break;
-                                    }
-                                }
-                            }
-
-                            let replay_data = PlayerReplayData {
-                                user_id: user_id_str.clone(),
-                                squad: player_obj
-                                    .get("squadId")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0) as i32,
-                                auto_squad: player_obj
-                                    .get("autoSquad")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false),
-                                team: player_obj.get("team").and_then(|v| v.as_i64()).unwrap_or(0)
-                                    as i32,
-                                wait_time: {
-                                    let mut wait_time = 0.0;
-                                    for (_, info_value) in players_info {
-                                        if let Some(info_obj) = info_value.as_object() {
-                                            let info_id = info_obj
-                                                .get("id")
-                                                .and_then(|v| v.as_u64())
-                                                .unwrap_or(0);
-                                            if info_id.to_string() == user_id_str
-                                                || user_id_str.parse::<u64>().unwrap_or(0)
-                                                    == info_id
-                                            {
-                                                wait_time = info_obj
-                                                    .get("wait_time")
-                                                    .and_then(|v| v.as_f64())
-                                                    .unwrap_or(0.0);
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    wait_time as f32
-                                },
-                                kills: player_obj
-                                    .get("kills")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0) as i32,
-                                ground_kills: player_obj
-                                    .get("groundKills")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0)
-                                    as i32,
-                                naval_kills: player_obj
-                                    .get("navalKills")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0)
-                                    as i32,
-                                team_kills: player_obj
-                                    .get("teamKills")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0)
-                                    as i32,
-                                ai_kills: player_obj
-                                    .get("aiKills")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0) as i32,
-                                ai_ground_kills: player_obj
-                                    .get("aiGroundKills")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0)
-                                    as i32,
-                                ai_naval_kills: player_obj
-                                    .get("aiNavalKills")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0)
-                                    as i32,
-                                assists: player_obj
-                                    .get("assists")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0) as i32,
-                                deaths: player_obj
-                                    .get("deaths")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0) as i32,
-                                capture_zone: player_obj
-                                    .get("captureZone")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0)
-                                    as i32,
-                                damage_zone: player_obj
-                                    .get("damageZone")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0)
-                                    as i32,
-                                score: player_obj
-                                    .get("score")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0) as i32,
-                                award_damage: player_obj
-                                    .get("awardDamage")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0)
-                                    as i32,
-                                missile_evades: player_obj
-                                    .get("missileEvades")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(0)
-                                    as i32,
-                                lineup,
-                            };
-
-                            players.push(PlayerData {
-                                player_info: info,
-                                replay_data,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(ReplayResults {
-        status,
-        time_played,
-        author_user_id,
-        author,
-        players,
-    })
 }

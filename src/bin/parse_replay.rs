@@ -40,7 +40,7 @@ struct Args {
     #[arg(long, default_value_t = false)]
     skip_zlib: bool,
 
-    /// Parse replay results data (requires header parsing).
+    /// Parse replay results and settings data. This will change sometime soon.
     #[arg(long, default_value_t = false)]
     parse_results: bool,
 }
@@ -59,6 +59,66 @@ fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     let args = Args::parse();
+
+    // if name is 0000.wrpl; this is a hacky solution for now.
+    if let Some(fname) = args.replay_file.file_name().and_then(|s| s.to_str()) {
+        if fname.len() == 9
+            && fname.ends_with(".wrpl")
+            && fname[..4].chars().all(|c| c.is_ascii_digit())
+        {
+            let dir = args
+                .replay_file
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let mut parts: Vec<_> = fs::read_dir(dir)
+                .unwrap()
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("wrpl"))
+                .collect();
+            parts.sort();
+            let mut bufs = Vec::new();
+            for p in &parts {
+                match fs::read(p) {
+                    Ok(d) => bufs.push(d),
+                    Err(e) => {
+                        error!("Failed to read part {:?}: {}", p, e);
+                        exit(1);
+                    }
+                }
+            }
+            // assemble and parse server replay
+            match parser::process_parted_replay(&bufs, args.skip_zlib) {
+                Ok(stats) => {
+                    if let Ok(h0) = header::parse_header(&bufs[0]) {
+                        println!("{}", h0);
+                    }
+                    if !stats.chat_messages.is_empty() {
+                        info!("Found {} chat messages:", stats.chat_messages.len());
+                        for (i, c) in stats.chat_messages.iter().enumerate() {
+                            info!("{}: {} says '{}'", i + 1, c.sender, c.message);
+                        }
+                    }
+                    if !stats.award_messages.is_empty() {
+                        info!("Found {} awards:", stats.award_messages.len());
+                        for (i, a) in stats.award_messages.iter().enumerate() {
+                            info!(
+                                "{}: Player {} got award '{}' (type {})",
+                                i + 1,
+                                a.player,
+                                a.award_name,
+                                a.award_type
+                            );
+                        }
+                    }
+                    // seems to be necessary
+                    exit(0);
+                }
+                Err(e) => {
+                    error!("Error processing segmented replay: {}", e);
+                }
+            }
+        }
+    }
 
     // read the file into memory first
     let file_data = match fs::read(&args.replay_file) {
