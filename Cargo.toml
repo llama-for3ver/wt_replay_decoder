@@ -1,6 +1,6 @@
 [package]
 name = "wrpl"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 default-run = "parse_replay"
 authors = ["llama-for3ver <llamaz@rooik.at>"]
