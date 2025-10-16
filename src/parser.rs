@@ -1,7 +1,7 @@
 use crate::header::{parse_header, ReplayHeader, ReplaySettings};
 use crate::packet::{
-    parse_award_packet, parse_chat_packet, parse_kill_packet, read_packet_header, read_vlq_size,
-    PacketInfo,
+    parse_award_packet, parse_chat_packet, parse_kill_packet, parse_movement_packet,
+    read_packet_header, read_vlq_size, MovementPacket, PacketInfo,
 };
 use crate::packet::{AwardInfo, ChatInfo, ReplayPacketType};
 use crate::results::parse_replay_results_json;
@@ -159,42 +159,70 @@ pub fn process_replay_data(
                         }
                     }
                     if packet_type_val == 4 {
-                        if payload_content.len() >= 4 {
-                            let signature = &payload_content[..4];
-                            debug!("MPI packet detected. Signature: {:02X?}", signature);
+                        if payload_content.len() >= 2 {
+                            // hacky workaround for off-by-one errors
+                            if payload_content[0] == 0xff && payload_content[1] == 0x0f {
+                                debug!("Movement packet signature matched (0xff 0x0f) at base=0");
+                                if let Some(movement_packet) =
+                                    parse_movement_packet(payload_content, timestamp_ticks)
+                                {
+                                    stats.movement_messages.push(movement_packet);
+                                } else {
+                                    debug!("Failed to parse movement packet at base=0");
+                                }
+                            } else if payload_content.len() >= 3
+                                && payload_content[1] == 0xff
+                                && payload_content[2] == 0x0f
+                            {
+                                debug!(
+                                    "Movement packet signature matched (0xff 0x0f) at base=1 (offset workaround)"
+                                );
+                                if let Some(movement_packet) =
+                                    parse_movement_packet(&payload_content[1..], timestamp_ticks)
+                                {
+                                    stats.movement_messages.push(movement_packet);
+                                } else {
+                                    debug!("Failed to parse movement packet at base=1");
+                                }
+                            } else if payload_content.len() >= 4 {
+                                let signature = &payload_content[..4];
+                                debug!("MPI packet detected. Signature: {:02X?}", signature);
 
-                            // 00 02 58 78 - Awards      (PacketTypeMPI_Award)
-                            // 00 02 58 58 - Kill screen? (PacketTypeMPI_Kill)
-                            // 00 02 58 74 - Model info (steering)
-                            // 00 03 58 43 - Model info (turret angles)
+                                // 00 02 58 78 - Awards      (PacketTypeMPI_Award)
+                                // 00 02 58 58 - Kill screen? (PacketTypeMPI_Kill)
+                                // 00 02 58 74 - Model info (steering)
+                                // 00 03 58 43 - Model info (turret angles)
 
-                            match signature {
-                                [0x00, 0x02, 0x58, 0x78] => {
-                                    debug!("MPI Award signature matched");
-                                    if let Some(award_info) =
-                                        parse_award_packet(payload_content, timestamp_ticks)
-                                    {
-                                        stats.award_messages.push(award_info);
+                                match signature {
+                                    [0x00, 0x02, 0x58, 0x78] => {
+                                        debug!("MPI Award signature matched");
+                                        if let Some(award_info) =
+                                            parse_award_packet(payload_content, timestamp_ticks)
+                                        {
+                                            stats.award_messages.push(award_info);
+                                        }
+                                    }
+                                    [0x00, 0x02, 0x58, 0x58] => {
+                                        debug!("MPI Kill signature matched");
+                                        if let Some(kill_info) =
+                                            parse_kill_packet(payload_content, timestamp_ticks)
+                                        {
+                                            // stats.kill_messages.push(kill_info);
+                                            info!("{:?}", kill_info)
+                                        }
+                                    }
+                                    // [0x00, 0x02, 0x58, 0x74] => {
+                                    //     debug!("MPI Model info (steering)");
+                                    // }
+                                    // [0x00, 0x03, 0x58, 0x43] => {
+                                    //     debug!("MPI Model info (turret angles)");
+                                    // }
+                                    unknown => {
+                                        debug!("Unknown MPI signature: {:02X?}", unknown);
                                     }
                                 }
-                                [0x00, 0x02, 0x58, 0x58] => {
-                                    debug!("MPI Kill signature matched");
-                                    if let Some(kill_info) =
-                                        parse_kill_packet(payload_content, timestamp_ticks)
-                                    {
-                                        // stats.kill_messages.push(kill_info);
-                                        info!("{:?}", kill_info)
-                                    }
-                                }
-                                [0x00, 0x02, 0x58, 0x74] => {
-                                    debug!("MPI Model info (steering) signature matched");
-                                }
-                                [0x00, 0x03, 0x58, 0x43] => {
-                                    debug!("MPI Model info (turret angles) signature matched");
-                                }
-                                unknown => {
-                                    debug!("Unknown MPI signature: {:02X?}", unknown);
-                                }
+                            } else {
+                                warn!("MPI packet too short to detect signature");
                             }
                         } else {
                             warn!("MPI packet too short to detect signature");
@@ -362,6 +390,7 @@ pub fn process_parted_replay(buffers: &[Vec<u8>], skip_zlib: bool) -> Result<Par
         combined.packets.extend(part.packets);
         combined.chat_messages.extend(part.chat_messages);
         combined.award_messages.extend(part.award_messages);
+        combined.movement_messages.extend(part.movement_messages);
     }
     Ok(combined)
 }
@@ -381,6 +410,8 @@ pub struct ParsedReplay {
     pub chat_messages: Vec<ChatInfo>,
     /// List of award messages.
     pub award_messages: Vec<AwardInfo>,
+    /// List of movement messages (parsed from movement packets).
+    pub movement_messages: Vec<MovementPacket>,
     /// Parsed settings data(if available).
     pub replay_settings: Option<ReplaySettings>,
     /// End-of-replay results data (if available).

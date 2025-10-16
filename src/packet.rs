@@ -399,3 +399,64 @@ pub fn parse_kill_packet(payload: &[u8], timestamp_ticks: u32) -> Option<KillInf
         killer_vehicle,
     })
 }
+
+/// Structure representing a movement packet (basic position info).
+#[derive(Debug, Clone)]
+pub struct MovementPacket {
+    pub eid: u16,
+    pub time_ticks: u32,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+}
+
+/// Parses the payload of movement (MPI) packets. Only works for server.
+pub fn parse_movement_packet(payload_content: &[u8], time_ticks: u32) -> Option<MovementPacket> {
+    if payload_content.len() < 40 {
+        return None;
+    }
+
+    if payload_content.get(0)? != &0xff
+        || payload_content.get(1)? != &0x0f
+        || payload_content.get(5)? != &0xa3
+        || payload_content.get(6)? != &0xf0
+        || payload_content.get(10)? != &0x00
+        || payload_content.get(11)? != &0x00
+        || payload_content.get(13)? != &0x14
+    {
+        return None;
+    }
+
+    // entity ID from sig
+    let eid: u16 = (payload_content[2] as u16) | ((payload_content[3] as u16) << 8);
+
+    // offsets 14,22,30
+    let get_f64 = |offset: usize| -> Option<f64> {
+        let end = offset + 8;
+        if end <= payload_content.len() {
+            let bytes = &payload_content[offset..end];
+            Some(f64::from_le_bytes([
+                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+            ]))
+        } else {
+            None
+        }
+    };
+
+    let x = get_f64(14)?;
+    let y = get_f64(22)?;
+    let z = get_f64(30)?;
+
+    // info!(
+    //     "Movement packet {{ eid: {}, time_ticks: {}, x: {}, y: {}, z: {} }}",
+    //     eid, time_ticks, x, y, z
+    // );
+
+    Some(MovementPacket {
+        eid,
+        time_ticks,
+        x,
+        y,
+        z,
+    })
+}
